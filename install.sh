@@ -1,16 +1,16 @@
 #!/bin/bash
 
 # =====================================================
-# TELJESEN MŰKÖDŐ E-PAPER KIJELZŐ TELEPÍTŐ
-# Chromium nélkül, SPI engedélyezéssel
+# WAVESHARE E-PAPER HTML RENDERER TELEPÍTŐ
+# HTML tartalom renderelésével
 # =====================================================
 
 # Kilépés hiba esetén
 set -e
 
 echo "======================================================"
-echo "  WAVESHARE E-PAPER KIJELZŐ TELEPÍTŐ"
-echo "  (Chromium nélküli, alacsony erőforrás-igényű verzió)"
+echo "  WAVESHARE E-PAPER HTML RENDERER TELEPÍTŐ"
+echo "  (HTML tartalom megjelenítésével)"
 echo "======================================================"
 
 # Aktuális felhasználó és könyvtárak beállítása
@@ -39,7 +39,11 @@ fi
 
 # Szükséges csomagok telepítése
 echo "Szükséges csomagok telepítése..."
-sudo apt-get install -y python3-pip python3-pil python3-numpy python3-requests python3-rpi.gpio python3-spidev git
+sudo apt-get install -y python3-pip python3-pil python3-numpy python3-requests python3-rpi.gpio python3-spidev git python3-selenium python3-bs4 firefox-esr wget unzip xvfb
+
+# Selenium és Firefox webdriver telepítése
+echo "Selenium webdriver telepítése..."
+pip3 install --user selenium webdriver-manager pyvirtualdisplay
 
 # Frissítési időköz beállítása
 DEFAULT_REFRESH=5
@@ -77,6 +81,10 @@ cat > $INSTALL_DIR/config.ini << EOL
 [Settings]
 url = https://naptarak.com/e-paper.html
 refresh_interval = $refresh_interval
+width = 640
+height = 400
+viewport_width = 800
+viewport_height = 600
 EOL
 
 # Python szkript létrehozása
@@ -93,6 +101,14 @@ import configparser
 import requests
 from PIL import Image, ImageDraw, ImageFont
 from io import BytesIO
+import tempfile
+
+# Selenium importálása a HTML rendereléshez
+from selenium import webdriver
+from selenium.webdriver.firefox.options import Options
+from selenium.webdriver.firefox.service import Service
+from webdriver_manager.firefox import GeckoDriverManager
+from pyvirtualdisplay import Display
 
 # Aktuális könyvtár beállítása
 INSTALL_DIR = os.path.dirname(os.path.abspath(__file__))
@@ -114,10 +130,10 @@ config.read(os.path.join(INSTALL_DIR, "config.ini"))
 
 URL = config.get('Settings', 'url')
 REFRESH_INTERVAL = int(config.get('Settings', 'refresh_interval'))
-
-# Képernyő felbontás
-EPD_WIDTH = 640
-EPD_HEIGHT = 400
+EPD_WIDTH = int(config.get('Settings', 'width', fallback=640))
+EPD_HEIGHT = int(config.get('Settings', 'height', fallback=400))
+VIEWPORT_WIDTH = int(config.get('Settings', 'viewport_width', fallback=800))
+VIEWPORT_HEIGHT = int(config.get('Settings', 'viewport_height', fallback=600))
 
 # Waveshare könyvtár betöltése
 try:
@@ -130,82 +146,6 @@ except ImportError as e:
     logger.error(f"Waveshare e-Paper könyvtár betöltési hiba: {e}")
     logger.error("Ellenőrizd, hogy a könyvtár a megfelelő helyen van-e: " + INSTALL_DIR)
     sys.exit(1)
-
-def create_date_image():
-    """Dátum és idő kép létrehozása"""
-    try:
-        # Üres kép létrehozása fehér háttérrel
-        image = Image.new('RGB', (EPD_WIDTH, EPD_HEIGHT), 'white')
-        draw = ImageDraw.Draw(image)
-        
-        # Keret rajzolása
-        draw.rectangle((0, 0, EPD_WIDTH, EPD_HEIGHT), outline='black')
-        
-        # Betűtípus beállítása
-        try:
-            font_large = ImageFont.truetype('/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf', 40)
-            font_medium = ImageFont.truetype('/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf', 36)
-            font_small = ImageFont.truetype('/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf', 24)
-        except OSError:
-            font_large = ImageFont.load_default()
-            font_medium = ImageFont.load_default()
-            font_small = ImageFont.load_default()
-        
-        # Aktuális dátum és idő
-        import locale
-        try:
-            locale.setlocale(locale.LC_TIME, "hu_HU.UTF-8")  # Magyar lokalizáció
-        except locale.Error:
-            try:
-                locale.setlocale(locale.LC_TIME, "hu_HU")
-            except locale.Error:
-                logger.warning("Nem sikerült beállítani a magyar lokalizációt")
-        
-        current_time = time.strftime("%H:%M:%S")
-        current_date = time.strftime("%Y. %B %d. %A")
-        
-        # Dátum és idő megjelenítése
-        draw.text((EPD_WIDTH//2, 100), current_time, font=font_large, fill='black', anchor="mm")
-        draw.text((EPD_WIDTH//2, 180), current_date, font=font_medium, fill='black', anchor="mm")
-        
-        # Naptár információ
-        draw.text((EPD_WIDTH//2, 260), "Naptár", font=font_medium, fill='red', anchor="mm")
-        draw.text((EPD_WIDTH//2, 320), "Következő frissítés:", font=font_small, fill='blue', anchor="mm")
-        draw.text((EPD_WIDTH//2, 360), f"{REFRESH_INTERVAL} perc múlva", font=font_small, fill='blue', anchor="mm")
-        
-        return image
-    except Exception as e:
-        logger.error(f"Hiba a dátum kép létrehozásakor: {e}")
-        return None
-
-def download_web_content():
-    """Weboldal letöltése és képpé alakítása"""
-    try:
-        logger.info(f"Weboldal tartalom letöltése: {URL}")
-        
-        headers = {
-            'User-Agent': 'Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/94.0.4606.81 Safari/537.36'
-        }
-        
-        # Weboldal letöltése
-        response = requests.get(URL, headers=headers, timeout=30)
-        response.raise_for_status()  # Hiba dobása, ha nem 200 OK
-        
-        # HTML tartalom feldolgozása - itt most egyszerűen dátumot jelenítünk meg
-        # Későbbiekben ide jöhet komplexebb megoldás a weboldal tartalmának feldolgozására
-        
-        # Most csak dátum képet készítünk
-        image = create_date_image()
-        if image is None:
-            raise Exception("Nem sikerült létrehozni a képet")
-        
-        return image
-    except requests.exceptions.RequestException as e:
-        logger.error(f"Hiba a weboldal letöltésekor: {e}")
-        return create_error_image(str(e))
-    except Exception as e:
-        logger.error(f"Váratlan hiba: {e}")
-        return create_error_image(str(e))
 
 def create_error_image(error_message):
     """Hibaüzenet képként"""
@@ -251,6 +191,68 @@ def create_error_image(error_message):
             return img
         except:
             return None
+
+def capture_website_screenshot():
+    """Weboldal képernyőkép készítése Selenium használatával"""
+    display = None
+    driver = None
+    
+    try:
+        logger.info(f"Weboldal képernyőkép készítése: {URL}")
+        
+        # Virtuális kijelző létrehozása
+        display = Display(visible=0, size=(VIEWPORT_WIDTH, VIEWPORT_HEIGHT))
+        display.start()
+        
+        # Firefox driver beállítások
+        options = Options()
+        options.add_argument("--headless")
+        options.add_argument("--no-sandbox")
+        options.add_argument("--disable-dev-shm-usage")
+        options.add_argument(f"--window-size={VIEWPORT_WIDTH},{VIEWPORT_HEIGHT}")
+        
+        # Firefox driver inicializálása
+        try:
+            service = Service(GeckoDriverManager().install())
+            driver = webdriver.Firefox(service=service, options=options)
+        except Exception as e:
+            logger.error(f"Hiba a Firefox driver inicializálásakor: {e}")
+            logger.info("Alternatív inicializálási mód használata...")
+            driver = webdriver.Firefox(options=options)
+        
+        # Weboldal betöltése
+        driver.get(URL)
+        
+        # Várakozás a betöltésre (1 másodperc)
+        time.sleep(1)
+        
+        # Képernyőkép készítése
+        screenshot_file = os.path.join(tempfile.gettempdir(), "website_screenshot.png")
+        driver.save_screenshot(screenshot_file)
+        
+        # Képernyőkép betöltése és méretezése
+        image = Image.open(screenshot_file)
+        image = image.resize((EPD_WIDTH, EPD_HEIGHT), Image.LANCZOS)
+        
+        # Ideiglenes fájl törlése
+        os.remove(screenshot_file)
+        
+        return image
+    except Exception as e:
+        logger.error(f"Hiba a weboldal képernyőkép készítésekor: {e}")
+        return create_error_image(str(e))
+    finally:
+        # Erőforrások felszabadítása
+        if driver:
+            try:
+                driver.quit()
+            except:
+                pass
+        if display:
+            try:
+                display.stop()
+            except:
+                pass
 
 def display_image(image):
     """Kép megjelenítése az e-Paper kijelzőn"""
@@ -335,10 +337,10 @@ def main_loop():
     
     while True:
         try:
-            logger.info("Weboldal tartalom letöltése...")
-            image = download_web_content()
+            logger.info("Weboldal képernyőkép készítése...")
+            image = capture_website_screenshot()
             
-            logger.info("Tartalom megjelenítése a kijelzőn...")
+            logger.info("Képernyőkép megjelenítése a kijelzőn...")
             display_image(image)
             
             # Várjunk a következő frissítésig
@@ -354,7 +356,7 @@ def main_loop():
             time.sleep(60)  # Hiba esetén várunk 1 percet, majd újrapróbáljuk
 
 if __name__ == "__main__":
-    logger.info("E-Paper Website Display alkalmazás indítása")
+    logger.info("E-Paper HTML Renderer alkalmazás indítása")
     main_loop()
 EOL
 
@@ -362,7 +364,7 @@ EOL
 echo "Szolgáltatás fájl létrehozása..."
 sudo bash -c "cat > /etc/systemd/system/epaper-display.service << EOL
 [Unit]
-Description=E-Paper Website Display
+Description=E-Paper HTML Renderer
 After=network.target
 
 [Service]
