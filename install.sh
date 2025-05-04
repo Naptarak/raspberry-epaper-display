@@ -39,7 +39,7 @@ fi
 
 # Szükséges csomagok telepítése
 echo "Szükséges csomagok telepítése..."
-sudo apt-get install -y python3-pip python3-pil python3-numpy python3-requests python3-rpi.gpio python3-spidev git firefox-esr wget unzip xvfb python3-venv python3-bs4 python3-selenium
+sudo apt-get install -y python3-pip python3-pil python3-numpy python3-requests python3-rpi.gpio python3-spidev git firefox-esr wget unzip xvfb python3-venv python3-bs4 python3-selenium python3-gpiozero
 
 # Telepítési könyvtár létrehozása
 echo "Telepítési könyvtár létrehozása..."
@@ -55,7 +55,7 @@ source $INSTALL_DIR/venv/bin/activate
 # Python csomagok telepítése a virtuális környezetbe
 echo "Python csomagok telepítése a virtuális környezetbe..."
 pip install --upgrade pip
-pip install selenium webdriver-manager pyvirtualdisplay pillow spidev RPi.GPIO numpy requests
+pip install selenium webdriver-manager pyvirtualdisplay pillow spidev RPi.GPIO numpy requests gpiozero
 
 # Waveshare e-Paper könyvtár telepítése
 echo "Waveshare e-Paper könyvtár telepítése..."
@@ -240,9 +240,9 @@ def capture_website_screenshot():
         logger.info(f"Weboldal betöltése: {URL}")
         driver.get(URL)
         
-        # Várakozás a betöltésre (2 másodperc)
-        logger.info("Várakozás 2 másodpercet a teljes betöltésre...")
-        time.sleep(2)
+        # Várakozás a betöltésre (3 másodperc)
+        logger.info("Várakozás 3 másodpercet a teljes betöltésre...")
+        time.sleep(3)
         
         # Képernyőkép készítése
         logger.info("Képernyőkép készítése...")
