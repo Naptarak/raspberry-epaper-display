@@ -2,7 +2,7 @@
 
 # =====================================================
 # WAVESHARE E-PAPER HTML RENDERER TELEPÍTŐ - TELJES VERZIÓ
-# HTML tartalom renderelésével, hibajavításokkal
+# HTML tartalom renderelésével, minden hibajavítással
 # =====================================================
 
 # Kilépés hiba esetén
@@ -10,7 +10,7 @@ set -e
 
 echo "======================================================"
 echo "  WAVESHARE E-PAPER HTML RENDERER TELEPÍTŐ"
-echo "  (HTML tartalom megjelenítésével - TELJES)"
+echo "  (HTML tartalom megjelenítésével - TELJES, JAVÍTOTT)"
 echo "======================================================"
 
 # Aktuális felhasználó és könyvtárak beállítása
@@ -39,7 +39,7 @@ fi
 
 # Szükséges csomagok telepítése
 echo "Szükséges csomagok telepítése..."
-sudo apt-get install -y python3-pip python3-pil python3-numpy python3-requests python3-rpi.gpio python3-spidev git firefox-esr wget unzip xvfb python3-venv python3-bs4
+sudo apt-get install -y python3-pip python3-pil python3-numpy python3-requests python3-rpi.gpio python3-spidev git firefox-esr wget unzip xvfb python3-venv python3-bs4 python3-selenium
 
 # Telepítési könyvtár létrehozása
 echo "Telepítési könyvtár létrehozása..."
@@ -55,7 +55,7 @@ source $INSTALL_DIR/venv/bin/activate
 # Python csomagok telepítése a virtuális környezetbe
 echo "Python csomagok telepítése a virtuális környezetbe..."
 pip install --upgrade pip
-pip install selenium webdriver-manager pyvirtualdisplay pillow
+pip install selenium webdriver-manager pyvirtualdisplay pillow spidev RPi.GPIO numpy requests
 
 # Waveshare e-Paper könyvtár telepítése
 echo "Waveshare e-Paper könyvtár telepítése..."
