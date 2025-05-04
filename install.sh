@@ -1,14 +1,11 @@
 #!/bin/bash
 
-# E-Paper Website Display Telepítő
+# E-Paper Website Display Telepítő (Javított)
 # Készítette: Claude
 
 echo "=================================================="
-echo "  E-Paper Website Display Telepítő"
+echo "  E-Paper Website Display Telepítő (Javított)"
 echo "=================================================="
-echo ""
-echo "Ez a telepítő beállítja a Raspberry Pi-t, hogy"
-echo "automatikusan megjelenítse a kívánt weboldalt a Waveshare e-Paper kijelzőn."
 echo ""
 
 # Telepítési könyvtár létrehozása
@@ -32,14 +29,19 @@ fi
 echo "A kijelző $refresh_interval percenként fog frissülni."
 echo ""
 
-# Szükséges csomagok telepítése
+# Szükséges csomagok telepítése apt segítségével
 echo "Szükséges csomagok telepítése..."
 sudo apt-get update
-sudo apt-get install -y python3-pip python3-pil python3-numpy chromium-browser unclutter x11-xserver-utils xdotool
+sudo apt-get install -y python3-pip python3-pil python3-numpy chromium-browser unclutter x11-xserver-utils xdotool python3-venv
 
-# Python csomagok telepítése
+# Virtuális környezet létrehozása
+echo "Python virtuális környezet létrehozása..."
+python3 -m venv $INSTALL_DIR/venv
+source $INSTALL_DIR/venv/bin/activate
+
+# Python csomagok telepítése a virtuális környezetbe
 echo "Python csomagok telepítése..."
-pip3 install selenium webdriver-manager RPi.GPIO spidev
+$INSTALL_DIR/venv/bin/pip install selenium webdriver-manager RPi.GPIO spidev
 
 # Waveshare e-Paper könyvtár telepítése
 echo "Waveshare e-Paper könyvtár telepítése..."
@@ -228,6 +230,7 @@ xdotool key alt+F11
 EOL
 
 # HDMI kijelzőn futó alkalmazás beállítása
+mkdir -p /home/pi/.config/autostart
 cat > /home/pi/.config/autostart/browser.desktop << EOL
 [Desktop Entry]
 Type=Application
@@ -245,7 +248,7 @@ After=network.target
 [Service]
 User=pi
 WorkingDirectory=/home/pi/e-paper-display
-ExecStart=/usr/bin/python3 /home/pi/e-paper-display/display_website.py
+ExecStart=/home/pi/e-paper-display/venv/bin/python /home/pi/e-paper-display/display_website.py
 Restart=always
 RestartSec=10
 
