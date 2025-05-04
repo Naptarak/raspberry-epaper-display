@@ -1,8 +1,8 @@
 #!/bin/bash
 
 # =====================================================
-# WAVESHARE E-PAPER HTML RENDERER TELEPÍTŐ - JAVÍTOTT
-# HTML tartalom renderelésével - Raspberry Pi OS kompatibilitással
+# WAVESHARE E-PAPER HTML RENDERER TELEPÍTŐ - TELJES VERZIÓ
+# HTML tartalom renderelésével, hibajavításokkal
 # =====================================================
 
 # Kilépés hiba esetén
@@ -10,7 +10,7 @@ set -e
 
 echo "======================================================"
 echo "  WAVESHARE E-PAPER HTML RENDERER TELEPÍTŐ"
-echo "  (HTML tartalom megjelenítésével - JAVÍTOTT)"
+echo "  (HTML tartalom megjelenítésével - TELJES)"
 echo "======================================================"
 
 # Aktuális felhasználó és könyvtárak beállítása
@@ -39,17 +39,31 @@ fi
 
 # Szükséges csomagok telepítése
 echo "Szükséges csomagok telepítése..."
-sudo apt-get install -y python3-pip python3-pil python3-numpy python3-requests python3-rpi.gpio python3-spidev git python3-selenium python3-bs4 firefox-esr wget unzip xvfb python3-venv
+sudo apt-get install -y python3-pip python3-pil python3-numpy python3-requests python3-rpi.gpio python3-spidev git firefox-esr wget unzip xvfb python3-venv python3-bs4
+
+# Telepítési könyvtár létrehozása
+echo "Telepítési könyvtár létrehozása..."
+mkdir -p $INSTALL_DIR
+rm -rf $INSTALL_DIR/*
+sudo chown -R $CURRENT_USER:$CURRENT_GROUP $INSTALL_DIR
 
 # Virtuális környezet létrehozása
 echo "Python virtuális környezet létrehozása..."
-mkdir -p $INSTALL_DIR
 python3 -m venv $INSTALL_DIR/venv
 source $INSTALL_DIR/venv/bin/activate
 
-# Selenium telepítése a virtuális környezetbe
-echo "Selenium webdriver telepítése a virtuális környezetbe..."
-pip install selenium webdriver-manager pyvirtualdisplay
+# Python csomagok telepítése a virtuális környezetbe
+echo "Python csomagok telepítése a virtuális környezetbe..."
+pip install --upgrade pip
+pip install selenium webdriver-manager pyvirtualdisplay pillow
+
+# Waveshare e-Paper könyvtár telepítése
+echo "Waveshare e-Paper könyvtár telepítése..."
+cd /tmp
+rm -rf e-Paper
+git clone https://github.com/waveshare/e-Paper.git
+cp -r e-Paper/RaspberryPi_JetsonNano/python/lib/waveshare_epd $INSTALL_DIR/
+cp -r e-Paper/RaspberryPi_JetsonNano/python/pic $INSTALL_DIR/
 
 # Frissítési időköz beállítása
 DEFAULT_REFRESH=5
@@ -66,18 +80,6 @@ if ! [[ "$refresh_interval" =~ ^[0-9]+$ ]]; then
 fi
 
 echo "A kijelző $refresh_interval percenként fog frissülni."
-
-# Telepítési könyvtár jogosultságainak beállítása
-echo "Telepítési könyvtár jogosultságainak beállítása..."
-sudo chown -R $CURRENT_USER:$CURRENT_GROUP $INSTALL_DIR
-
-# Waveshare e-Paper könyvtár telepítése
-echo "Waveshare e-Paper könyvtár telepítése..."
-cd /tmp
-sudo rm -rf e-Paper
-git clone https://github.com/waveshare/e-Paper.git
-cp -r e-Paper/RaspberryPi_JetsonNano/python/lib/waveshare_epd $INSTALL_DIR/
-cp -r e-Paper/RaspberryPi_JetsonNano/python/pic $INSTALL_DIR/
 
 # Konfigurációs fájl létrehozása
 echo "Konfigurációs fájl létrehozása..."
@@ -106,6 +108,7 @@ import requests
 from PIL import Image, ImageDraw, ImageFont
 from io import BytesIO
 import tempfile
+import traceback
 
 # Aktuális könyvtár beállítása
 INSTALL_DIR = os.path.dirname(os.path.abspath(__file__))
@@ -191,19 +194,28 @@ def create_error_image(error_message):
 
 def capture_website_screenshot():
     """Weboldal képernyőkép készítése Selenium használatával"""
+    display = None
+    driver = None
+    
     try:
         logger.info(f"Weboldal képernyőkép készítése: {URL}")
         
-        # Selenium importálása
-        from selenium import webdriver
-        from selenium.webdriver.firefox.options import Options
-        from selenium.webdriver.firefox.service import Service
-        from webdriver_manager.firefox import GeckoDriverManager
-        from pyvirtualdisplay import Display
+        # Selenium és egyéb szükséges modulok importálása
+        try:
+            from selenium import webdriver
+            from selenium.webdriver.firefox.options import Options
+            from selenium.webdriver.firefox.service import Service
+            from webdriver_manager.firefox import GeckoDriverManager
+            from pyvirtualdisplay import Display
+            logger.info("Selenium és kapcsolódó modulok sikeresen importálva")
+        except ImportError as e:
+            logger.error(f"Modul importálási hiba: {e}")
+            return create_error_image(f"Modul importálási hiba: {e}")
         
         # Virtuális kijelző létrehozása
         display = Display(visible=0, size=(VIEWPORT_WIDTH, VIEWPORT_HEIGHT))
         display.start()
+        logger.info("Virtuális kijelző elindítva")
         
         # Firefox driver beállítások
         options = Options()
@@ -214,38 +226,59 @@ def capture_website_screenshot():
         
         # Firefox driver inicializálása
         try:
+            logger.info("Firefox driver inicializálása GeckoDriverManager használatával...")
             service = Service(GeckoDriverManager().install())
             driver = webdriver.Firefox(service=service, options=options)
+            logger.info("Firefox driver sikeresen inicializálva")
         except Exception as e:
-            logger.error(f"Hiba a Firefox driver inicializálásakor: {e}")
+            logger.error(f"Hiba a Firefox driver inicializálásakor GeckoDriverManager-rel: {e}")
             logger.info("Alternatív inicializálási mód használata...")
             driver = webdriver.Firefox(options=options)
+            logger.info("Firefox driver sikeresen inicializálva alternatív módon")
         
         # Weboldal betöltése
+        logger.info(f"Weboldal betöltése: {URL}")
         driver.get(URL)
         
-        # Várakozás a betöltésre (1 másodperc)
-        time.sleep(1)
+        # Várakozás a betöltésre (2 másodperc)
+        logger.info("Várakozás 2 másodpercet a teljes betöltésre...")
+        time.sleep(2)
         
         # Képernyőkép készítése
+        logger.info("Képernyőkép készítése...")
         screenshot_file = os.path.join(tempfile.gettempdir(), "website_screenshot.png")
         driver.save_screenshot(screenshot_file)
         
         # Képernyőkép betöltése és méretezése
+        logger.info("Képernyőkép betöltése és méretezése...")
         image = Image.open(screenshot_file)
         image = image.resize((EPD_WIDTH, EPD_HEIGHT), Image.LANCZOS)
         
         # Ideiglenes fájl törlése
+        logger.info("Ideiglenes fájl törlése...")
         os.remove(screenshot_file)
         
-        # Erőforrások felszabadítása
-        driver.quit()
-        display.stop()
-        
+        logger.info("Képernyőkép sikeresen elkészítve")
         return image
     except Exception as e:
         logger.error(f"Hiba a weboldal képernyőkép készítésekor: {e}")
+        logger.error(traceback.format_exc())
         return create_error_image(str(e))
+    finally:
+        # Erőforrások felszabadítása
+        logger.info("Erőforrások felszabadítása...")
+        if driver:
+            try:
+                driver.quit()
+                logger.info("Firefox driver sikeresen leállítva")
+            except Exception as e:
+                logger.error(f"Hiba a Firefox driver leállításakor: {e}")
+        if display:
+            try:
+                display.stop()
+                logger.info("Virtuális kijelző sikeresen leállítva")
+            except Exception as e:
+                logger.error(f"Hiba a virtuális kijelző leállításakor: {e}")
 
 def display_image(image):
     """Kép megjelenítése az e-Paper kijelzőn"""
@@ -274,6 +307,7 @@ def display_image(image):
             
     except Exception as e:
         logger.error(f"Hiba a kép megjelenítésekor: {e}")
+        logger.error(traceback.format_exc())
         return False
 
 def perform_display_test():
@@ -322,6 +356,7 @@ def perform_display_test():
         
     except Exception as e:
         logger.error(f"Hiba a teszt során: {e}")
+        logger.error(traceback.format_exc())
 
 def main_loop():
     """Fő program ciklus"""
@@ -345,6 +380,7 @@ def main_loop():
             break
         except Exception as e:
             logger.error(f"Váratlan hiba a fő ciklusban: {e}")
+            logger.error(traceback.format_exc())
             logger.info("Várakozás 1 percet az újrapróbálkozás előtt...")
             time.sleep(60)  # Hiba esetén várunk 1 percet, majd újrapróbáljuk
 
@@ -388,13 +424,18 @@ EOL"
 # Jogosultságok beállítása
 sudo chmod 644 /etc/systemd/system/epaper-display.service
 
-# Szolgáltatás beállítása
-echo "Szolgáltatás beállítása..."
+# Bootoláskor automatikus indítás
+echo "Automatikus indítás beállítása..."
 sudo systemctl daemon-reload
-sudo systemctl stop epaper-display.service 2>/dev/null || true
-sudo systemctl disable epaper-display.service 2>/dev/null || true
 sudo systemctl enable epaper-display.service
-sudo systemctl start epaper-display.service
+
+# Szolgáltatás indítása
+echo "Szolgáltatás indítása..."
+sudo systemctl restart epaper-display.service
+
+# Cron job hozzáadása biztonsági tartalékként
+echo "Cron job beállítása biztonsági tartalékként..."
+(crontab -l 2>/dev/null | grep -v "e-paper-display"; echo "@reboot sleep 30 && $INSTALL_DIR/start.sh > $INSTALL_DIR/cron.log 2>&1") | crontab -
 
 # Telepítés befejezve
 echo ""
