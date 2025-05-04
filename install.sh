@@ -1,7 +1,7 @@
 #!/bin/bash
 
-# E-Paper Website Display Teljesen Automatikus Telepítő
-# v1.0
+# E-Paper Website Display Javított Automatikus Telepítő
+# v1.1
 
 # Kilépés hiba esetén
 set -e
@@ -10,9 +10,16 @@ echo "========================================================"
 echo "  E-Paper Website Display Automatikus Telepítő"
 echo "========================================================"
 echo ""
-echo "Ez a szkript automatikusan telepíti és beállítja az"
-echo "e-Paper kijelző alkalmazást a Raspberry Pi Zero 2W-re."
-echo ""
+
+# Aktuális felhasználó meghatározása
+CURRENT_USER=$(whoami)
+CURRENT_USER_GROUP=$(id -gn)
+echo "Telepítés a következő felhasználónak: $CURRENT_USER"
+
+# Telepítési könyvtár beállítása
+HOME_DIR=$(eval echo ~$CURRENT_USER)
+INSTALL_DIR="$HOME_DIR/e-paper-display"
+echo "Telepítési könyvtár: $INSTALL_DIR"
 
 # Csomagkezelő javítása
 echo "Csomagkezelő javítása..."
@@ -42,11 +49,10 @@ echo "A kijelző $refresh_interval percenként fog frissülni."
 echo ""
 
 # Telepítési könyvtár létrehozása
-INSTALL_DIR="/home/pi/e-paper-display"
 echo "Telepítési könyvtár létrehozása: $INSTALL_DIR"
 sudo rm -rf $INSTALL_DIR
 sudo mkdir -p $INSTALL_DIR
-sudo chown -R pi:pi $INSTALL_DIR
+sudo chown -R $CURRENT_USER:$CURRENT_USER_GROUP $INSTALL_DIR
 
 # Waveshare e-Paper könyvtár telepítése
 echo "Waveshare e-Paper könyvtár telepítése..."
@@ -55,7 +61,7 @@ sudo rm -rf e-Paper
 git clone https://github.com/waveshare/e-Paper.git
 sudo cp -r e-Paper/RaspberryPi_JetsonNano/python/lib/waveshare_epd $INSTALL_DIR/
 sudo cp -r e-Paper/RaspberryPi_JetsonNano/python/pic $INSTALL_DIR/
-sudo chown -R pi:pi $INSTALL_DIR
+sudo chown -R $CURRENT_USER:$CURRENT_USER_GROUP $INSTALL_DIR
 
 # Alkalmazás fájlok létrehozása
 echo "Alkalmazás fájlok létrehozása..."
@@ -85,12 +91,16 @@ from selenium.webdriver.common.by import By
 from selenium.webdriver.support.ui import WebDriverWait
 from selenium.webdriver.support import expected_conditions as EC
 
+# Aktuális felhasználó otthoni könyvtárának meghatározása
+HOME_DIR = os.path.expanduser("~")
+INSTALL_DIR = os.path.join(HOME_DIR, "e-paper-display")
+
 # Logging beállítása
 logging.basicConfig(
     level=logging.INFO,
     format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
     handlers=[
-        logging.FileHandler("/home/pi/e-paper-display/app.log"),
+        logging.FileHandler(os.path.join(INSTALL_DIR, "app.log")),
         logging.StreamHandler()
     ]
 )
@@ -98,7 +108,7 @@ logger = logging.getLogger("e-paper-display")
 
 # Konfiguráció betöltése
 config = configparser.ConfigParser()
-config.read('/home/pi/e-paper-display/config.ini')
+config.read(os.path.join(INSTALL_DIR, "config.ini"))
 
 URL = config.get('Settings', 'url')
 REFRESH_INTERVAL = int(config.get('Settings', 'refresh_interval'))
@@ -109,6 +119,7 @@ EPD_HEIGHT = 400
 
 # Waveshare könyvtár betöltése
 try:
+    sys.path.append(INSTALL_DIR)
     from waveshare_epd import epd4in01f
     epd_available = True
     logger.info("Waveshare e-Paper könyvtár sikeresen betöltve")
@@ -244,33 +255,33 @@ sudo chmod +x $INSTALL_DIR/start_browser.sh
 echo "Automatikus indítás beállítása..."
 
 # Hozzunk létre egy könyvtárat az automatikus indításhoz
-sudo mkdir -p /home/pi/.config/autostart
-sudo cat > /home/pi/.config/autostart/browser.desktop << EOL
+mkdir -p $HOME_DIR/.config/autostart
+cat > $HOME_DIR/.config/autostart/browser.desktop << EOL
 [Desktop Entry]
 Type=Application
 Name=Fullscreen Browser
-Exec=/home/pi/e-paper-display/start_browser.sh
+Exec=$INSTALL_DIR/start_browser.sh
 X-GNOME-Autostart-enabled=true
 EOL
-sudo chown -R pi:pi /home/pi/.config
+sudo chown -R $CURRENT_USER:$CURRENT_USER_GROUP $HOME_DIR/.config/autostart
 
 # E-Paper service beállítása
 echo "E-Paper service beállítása..."
-sudo bash -c 'cat > /etc/systemd/system/epaper-display.service << EOL
+sudo bash -c "cat > /etc/systemd/system/epaper-display.service << EOL
 [Unit]
 Description=E-Paper Website Display
 After=network.target
 
 [Service]
-User=pi
-WorkingDirectory=/home/pi/e-paper-display
-ExecStart=/usr/bin/python3 /home/pi/e-paper-display/display_website.py
+User=$CURRENT_USER
+WorkingDirectory=$INSTALL_DIR
+ExecStart=/usr/bin/python3 $INSTALL_DIR/display_website.py
 Restart=always
 RestartSec=10
 
 [Install]
 WantedBy=multi-user.target
-EOL'
+EOL"
 
 sudo chmod 644 /etc/systemd/system/epaper-display.service
 sudo systemctl daemon-reload
@@ -278,7 +289,7 @@ sudo systemctl enable epaper-display.service
 sudo systemctl start epaper-display.service
 
 # Eltávolító szkript létrehozása későbbi használatra
-cat > $INSTALL_DIR/uninstall.sh << 'EOL'
+cat > $INSTALL_DIR/uninstall.sh << EOL
 #!/bin/bash
 
 echo "=================================================="
@@ -304,11 +315,11 @@ sudo systemctl daemon-reload
 
 # Autostart beállítás eltávolítása
 echo "Automatikus indítás eltávolítása..."
-rm -f /home/pi/.config/autostart/browser.desktop
+rm -f $HOME/.config/autostart/browser.desktop
 
 # Telepítési könyvtár eltávolítása
 echo "Telepítési könyvtár eltávolítása..."
-sudo rm -rf /home/pi/e-paper-display
+sudo rm -rf $INSTALL_DIR
 
 echo ""
 echo "==================================================="
@@ -343,7 +354,7 @@ echo "   - Kapcsold be a Raspberry Pi-t"
 echo "   - A rendszer automatikusan elindítja az e-Paper alkalmazást"
 echo ""
 echo "Az alkalmazás eltávolításához futtasd:"
-echo "  /home/pi/e-paper-display/uninstall.sh"
+echo "  $INSTALL_DIR/uninstall.sh"
 echo ""
 echo "Most kapcsold ki a Raspberry Pi-t és csatlakoztasd az e-Paper kijelzőt:"
 echo "sudo shutdown -h now"
