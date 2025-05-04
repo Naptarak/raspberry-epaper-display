@@ -1,8 +1,8 @@
 #!/bin/bash
 
 # =====================================================
-# WAVESHARE E-PAPER HTML RENDERER TELEPÍTŐ
-# HTML tartalom renderelésével
+# WAVESHARE E-PAPER HTML RENDERER TELEPÍTŐ - JAVÍTOTT
+# HTML tartalom renderelésével - Raspberry Pi OS kompatibilitással
 # =====================================================
 
 # Kilépés hiba esetén
@@ -10,7 +10,7 @@ set -e
 
 echo "======================================================"
 echo "  WAVESHARE E-PAPER HTML RENDERER TELEPÍTŐ"
-echo "  (HTML tartalom megjelenítésével)"
+echo "  (HTML tartalom megjelenítésével - JAVÍTOTT)"
 echo "======================================================"
 
 # Aktuális felhasználó és könyvtárak beállítása
@@ -39,11 +39,17 @@ fi
 
 # Szükséges csomagok telepítése
 echo "Szükséges csomagok telepítése..."
-sudo apt-get install -y python3-pip python3-pil python3-numpy python3-requests python3-rpi.gpio python3-spidev git python3-selenium python3-bs4 firefox-esr wget unzip xvfb
+sudo apt-get install -y python3-pip python3-pil python3-numpy python3-requests python3-rpi.gpio python3-spidev git python3-selenium python3-bs4 firefox-esr wget unzip xvfb python3-venv
 
-# Selenium és Firefox webdriver telepítése
-echo "Selenium webdriver telepítése..."
-pip3 install --user selenium webdriver-manager pyvirtualdisplay
+# Virtuális környezet létrehozása
+echo "Python virtuális környezet létrehozása..."
+mkdir -p $INSTALL_DIR
+python3 -m venv $INSTALL_DIR/venv
+source $INSTALL_DIR/venv/bin/activate
+
+# Selenium telepítése a virtuális környezetbe
+echo "Selenium webdriver telepítése a virtuális környezetbe..."
+pip install selenium webdriver-manager pyvirtualdisplay
 
 # Frissítési időköz beállítása
 DEFAULT_REFRESH=5
@@ -61,10 +67,8 @@ fi
 
 echo "A kijelző $refresh_interval percenként fog frissülni."
 
-# Telepítési könyvtár létrehozása
-echo "Telepítési könyvtár létrehozása..."
-sudo rm -rf $INSTALL_DIR
-sudo mkdir -p $INSTALL_DIR
+# Telepítési könyvtár jogosultságainak beállítása
+echo "Telepítési könyvtár jogosultságainak beállítása..."
 sudo chown -R $CURRENT_USER:$CURRENT_GROUP $INSTALL_DIR
 
 # Waveshare e-Paper könyvtár telepítése
@@ -102,13 +106,6 @@ import requests
 from PIL import Image, ImageDraw, ImageFont
 from io import BytesIO
 import tempfile
-
-# Selenium importálása a HTML rendereléshez
-from selenium import webdriver
-from selenium.webdriver.firefox.options import Options
-from selenium.webdriver.firefox.service import Service
-from webdriver_manager.firefox import GeckoDriverManager
-from pyvirtualdisplay import Display
 
 # Aktuális könyvtár beállítása
 INSTALL_DIR = os.path.dirname(os.path.abspath(__file__))
@@ -194,11 +191,15 @@ def create_error_image(error_message):
 
 def capture_website_screenshot():
     """Weboldal képernyőkép készítése Selenium használatával"""
-    display = None
-    driver = None
-    
     try:
         logger.info(f"Weboldal képernyőkép készítése: {URL}")
+        
+        # Selenium importálása
+        from selenium import webdriver
+        from selenium.webdriver.firefox.options import Options
+        from selenium.webdriver.firefox.service import Service
+        from webdriver_manager.firefox import GeckoDriverManager
+        from pyvirtualdisplay import Display
         
         # Virtuális kijelző létrehozása
         display = Display(visible=0, size=(VIEWPORT_WIDTH, VIEWPORT_HEIGHT))
@@ -237,22 +238,14 @@ def capture_website_screenshot():
         # Ideiglenes fájl törlése
         os.remove(screenshot_file)
         
+        # Erőforrások felszabadítása
+        driver.quit()
+        display.stop()
+        
         return image
     except Exception as e:
         logger.error(f"Hiba a weboldal képernyőkép készítésekor: {e}")
         return create_error_image(str(e))
-    finally:
-        # Erőforrások felszabadítása
-        if driver:
-            try:
-                driver.quit()
-            except:
-                pass
-        if display:
-            try:
-                display.stop()
-            except:
-                pass
 
 def display_image(image):
     """Kép megjelenítése az e-Paper kijelzőn"""
@@ -360,6 +353,20 @@ if __name__ == "__main__":
     main_loop()
 EOL
 
+# Indítószript létrehozása
+echo "Indítószript létrehozása..."
+cat > $INSTALL_DIR/start.sh << EOL
+#!/bin/bash
+# Virtuális környezet aktiválása és a program indítása
+cd $INSTALL_DIR
+source venv/bin/activate
+python display_website.py
+EOL
+
+# Jogosultságok beállítása
+chmod +x $INSTALL_DIR/start.sh
+chmod +x $INSTALL_DIR/display_website.py
+
 # Szolgáltatás létrehozása
 echo "Szolgáltatás fájl létrehozása..."
 sudo bash -c "cat > /etc/systemd/system/epaper-display.service << EOL
@@ -370,7 +377,7 @@ After=network.target
 [Service]
 User=$CURRENT_USER
 WorkingDirectory=$INSTALL_DIR
-ExecStart=/usr/bin/python3 $INSTALL_DIR/display_website.py
+ExecStart=$INSTALL_DIR/start.sh
 Restart=always
 RestartSec=10
 
@@ -379,7 +386,6 @@ WantedBy=multi-user.target
 EOL"
 
 # Jogosultságok beállítása
-sudo chmod +x $INSTALL_DIR/display_website.py
 sudo chmod 644 /etc/systemd/system/epaper-display.service
 
 # Szolgáltatás beállítása
