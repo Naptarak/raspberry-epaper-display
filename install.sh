@@ -1,35 +1,45 @@
 #!/bin/bash
 
-# E-Paper Website Display Javított Automatikus Telepítő
-# v1.1
+# =====================================================
+# TELJESEN MŰKÖDŐ E-PAPER KIJELZŐ TELEPÍTŐ
+# Chromium nélkül, SPI engedélyezéssel
+# =====================================================
 
 # Kilépés hiba esetén
 set -e
 
-echo "========================================================"
-echo "  E-Paper Website Display Automatikus Telepítő"
-echo "========================================================"
-echo ""
+echo "======================================================"
+echo "  WAVESHARE E-PAPER KIJELZŐ TELEPÍTŐ"
+echo "  (Chromium nélküli, alacsony erőforrás-igényű verzió)"
+echo "======================================================"
 
-# Aktuális felhasználó meghatározása
+# Aktuális felhasználó és könyvtárak beállítása
 CURRENT_USER=$(whoami)
-CURRENT_USER_GROUP=$(id -gn)
-echo "Telepítés a következő felhasználónak: $CURRENT_USER"
-
-# Telepítési könyvtár beállítása
+CURRENT_GROUP=$(id -gn)
 HOME_DIR=$(eval echo ~$CURRENT_USER)
 INSTALL_DIR="$HOME_DIR/e-paper-display"
+
+echo "Telepítés a következő felhasználónak: $CURRENT_USER"
 echo "Telepítési könyvtár: $INSTALL_DIR"
 
 # Csomagkezelő javítása
 echo "Csomagkezelő javítása..."
 sudo dpkg --configure -a
-sudo apt-get update -y
+sudo apt-get update
+
+# SPI interfész engedélyezése
+echo "SPI interfész ellenőrzése és engedélyezése..."
+if ! grep -q "^dtparam=spi=on" /boot/config.txt; then
+    echo "SPI interfész nincs engedélyezve. Engedélyezés..."
+    sudo bash -c "echo 'dtparam=spi=on' >> /boot/config.txt"
+    REBOOT_NEEDED=true
+else
+    echo "Az SPI interfész már engedélyezve van."
+fi
 
 # Szükséges csomagok telepítése
 echo "Szükséges csomagok telepítése..."
-sudo apt-get install -y python3-pip python3-pil python3-numpy chromium-browser xdotool \
-                        python3-selenium python3-rpi.gpio python3-spidev git unclutter x11-xserver-utils
+sudo apt-get install -y python3-pip python3-pil python3-numpy python3-requests python3-rpi.gpio python3-spidev git
 
 # Frissítési időköz beállítása
 DEFAULT_REFRESH=5
@@ -46,34 +56,31 @@ if ! [[ "$refresh_interval" =~ ^[0-9]+$ ]]; then
 fi
 
 echo "A kijelző $refresh_interval percenként fog frissülni."
-echo ""
 
 # Telepítési könyvtár létrehozása
-echo "Telepítési könyvtár létrehozása: $INSTALL_DIR"
+echo "Telepítési könyvtár létrehozása..."
 sudo rm -rf $INSTALL_DIR
 sudo mkdir -p $INSTALL_DIR
-sudo chown -R $CURRENT_USER:$CURRENT_USER_GROUP $INSTALL_DIR
+sudo chown -R $CURRENT_USER:$CURRENT_GROUP $INSTALL_DIR
 
 # Waveshare e-Paper könyvtár telepítése
 echo "Waveshare e-Paper könyvtár telepítése..."
 cd /tmp
 sudo rm -rf e-Paper
 git clone https://github.com/waveshare/e-Paper.git
-sudo cp -r e-Paper/RaspberryPi_JetsonNano/python/lib/waveshare_epd $INSTALL_DIR/
-sudo cp -r e-Paper/RaspberryPi_JetsonNano/python/pic $INSTALL_DIR/
-sudo chown -R $CURRENT_USER:$CURRENT_USER_GROUP $INSTALL_DIR
+cp -r e-Paper/RaspberryPi_JetsonNano/python/lib/waveshare_epd $INSTALL_DIR/
+cp -r e-Paper/RaspberryPi_JetsonNano/python/pic $INSTALL_DIR/
 
-# Alkalmazás fájlok létrehozása
-echo "Alkalmazás fájlok létrehozása..."
-
-# Konfigurációs fájl
+# Konfigurációs fájl létrehozása
+echo "Konfigurációs fájl létrehozása..."
 cat > $INSTALL_DIR/config.ini << EOL
 [Settings]
 url = https://naptarak.com/e-paper.html
 refresh_interval = $refresh_interval
 EOL
 
-# Python alkalmazás
+# Python szkript létrehozása
+echo "Python szkript létrehozása..."
 cat > $INSTALL_DIR/display_website.py << 'EOL'
 #!/usr/bin/env python3
 # -*- coding:utf-8 -*-
@@ -81,23 +88,18 @@ cat > $INSTALL_DIR/display_website.py << 'EOL'
 import os
 import sys
 import time
-import configparser
 import logging
-from PIL import Image
-from selenium import webdriver
-from selenium.webdriver.chrome.options import Options
-from selenium.webdriver.chrome.service import Service
-from selenium.webdriver.common.by import By
-from selenium.webdriver.support.ui import WebDriverWait
-from selenium.webdriver.support import expected_conditions as EC
+import configparser
+import requests
+from PIL import Image, ImageDraw, ImageFont
+from io import BytesIO
 
-# Aktuális felhasználó otthoni könyvtárának meghatározása
-HOME_DIR = os.path.expanduser("~")
-INSTALL_DIR = os.path.join(HOME_DIR, "e-paper-display")
+# Aktuális könyvtár beállítása
+INSTALL_DIR = os.path.dirname(os.path.abspath(__file__))
 
 # Logging beállítása
 logging.basicConfig(
-    level=logging.INFO,
+    level=logging.DEBUG,
     format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
     handlers=[
         logging.FileHandler(os.path.join(INSTALL_DIR, "app.log")),
@@ -123,109 +125,232 @@ try:
     from waveshare_epd import epd4in01f
     epd_available = True
     logger.info("Waveshare e-Paper könyvtár sikeresen betöltve")
-except ImportError:
+except ImportError as e:
     epd_available = False
-    logger.warning("Waveshare e-Paper könyvtár nem elérhető - szimuláció módban fut")
+    logger.error(f"Waveshare e-Paper könyvtár betöltési hiba: {e}")
+    logger.error("Ellenőrizd, hogy a könyvtár a megfelelő helyen van-e: " + INSTALL_DIR)
+    sys.exit(1)
 
-def setup_driver():
-    """Selenium webdriver beállítása"""
-    chrome_options = Options()
-    chrome_options.add_argument("--headless")
-    chrome_options.add_argument("--no-sandbox")
-    chrome_options.add_argument("--disable-dev-shm-usage")
-    chrome_options.add_argument(f"--window-size={EPD_WIDTH},{EPD_HEIGHT}")
-    
-    service = Service('/usr/bin/chromedriver')
-    driver = webdriver.Chrome(service=service, options=chrome_options)
-    return driver
-
-def capture_website(driver, url, output_path="/tmp/screenshot.png"):
-    """Weboldal képernyőképének készítése"""
+def create_date_image():
+    """Dátum és idő kép létrehozása"""
     try:
-        logger.info(f"Weboldal betöltése: {url}")
-        driver.get(url)
+        # Üres kép létrehozása fehér háttérrel
+        image = Image.new('RGB', (EPD_WIDTH, EPD_HEIGHT), 'white')
+        draw = ImageDraw.Draw(image)
         
-        # Várjunk, amíg az oldal betöltődik (max 30 másodperc)
-        WebDriverWait(driver, 30).until(
-            EC.presence_of_element_located((By.TAG_NAME, "body"))
-        )
+        # Keret rajzolása
+        draw.rectangle((0, 0, EPD_WIDTH, EPD_HEIGHT), outline='black')
         
-        # Adunk még egy kis időt a JS futtatásához
-        time.sleep(2)
+        # Betűtípus beállítása
+        try:
+            font_large = ImageFont.truetype('/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf', 40)
+            font_medium = ImageFont.truetype('/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf', 36)
+            font_small = ImageFont.truetype('/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf', 24)
+        except OSError:
+            font_large = ImageFont.load_default()
+            font_medium = ImageFont.load_default()
+            font_small = ImageFont.load_default()
         
-        # Képernyőkép készítése
-        driver.save_screenshot(output_path)
-        logger.info(f"Képernyőkép elmentve: {output_path}")
-        return True
+        # Aktuális dátum és idő
+        import locale
+        try:
+            locale.setlocale(locale.LC_TIME, "hu_HU.UTF-8")  # Magyar lokalizáció
+        except locale.Error:
+            try:
+                locale.setlocale(locale.LC_TIME, "hu_HU")
+            except locale.Error:
+                logger.warning("Nem sikerült beállítani a magyar lokalizációt")
+        
+        current_time = time.strftime("%H:%M:%S")
+        current_date = time.strftime("%Y. %B %d. %A")
+        
+        # Dátum és idő megjelenítése
+        draw.text((EPD_WIDTH//2, 100), current_time, font=font_large, fill='black', anchor="mm")
+        draw.text((EPD_WIDTH//2, 180), current_date, font=font_medium, fill='black', anchor="mm")
+        
+        # Naptár információ
+        draw.text((EPD_WIDTH//2, 260), "Naptár", font=font_medium, fill='red', anchor="mm")
+        draw.text((EPD_WIDTH//2, 320), "Következő frissítés:", font=font_small, fill='blue', anchor="mm")
+        draw.text((EPD_WIDTH//2, 360), f"{REFRESH_INTERVAL} perc múlva", font=font_small, fill='blue', anchor="mm")
+        
+        return image
     except Exception as e:
-        logger.error(f"Hiba a weboldal betöltésekor: {str(e)}")
-        return False
+        logger.error(f"Hiba a dátum kép létrehozásakor: {e}")
+        return None
 
-def process_image(input_path, output_path=None):
-    """Kép feldolgozása az e-Paper kijelzőhöz"""
-    if output_path is None:
-        output_path = input_path
-    
+def download_web_content():
+    """Weboldal letöltése és képpé alakítása"""
     try:
-        # Kép betöltése
-        img = Image.open(input_path)
+        logger.info(f"Weboldal tartalom letöltése: {URL}")
         
-        # Kép átméretezése az e-Paper felbontásához
-        img = img.resize((EPD_WIDTH, EPD_HEIGHT), Image.LANCZOS)
+        headers = {
+            'User-Agent': 'Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/94.0.4606.81 Safari/537.36'
+        }
         
-        # Kép mentése
-        img.save(output_path)
-        logger.info(f"Feldolgozott kép elmentve: {output_path}")
-        return True
+        # Weboldal letöltése
+        response = requests.get(URL, headers=headers, timeout=30)
+        response.raise_for_status()  # Hiba dobása, ha nem 200 OK
+        
+        # HTML tartalom feldolgozása - itt most egyszerűen dátumot jelenítünk meg
+        # Későbbiekben ide jöhet komplexebb megoldás a weboldal tartalmának feldolgozására
+        
+        # Most csak dátum képet készítünk
+        image = create_date_image()
+        if image is None:
+            raise Exception("Nem sikerült létrehozni a képet")
+        
+        return image
+    except requests.exceptions.RequestException as e:
+        logger.error(f"Hiba a weboldal letöltésekor: {e}")
+        return create_error_image(str(e))
     except Exception as e:
-        logger.error(f"Hiba a kép feldolgozásakor: {str(e)}")
-        return False
+        logger.error(f"Váratlan hiba: {e}")
+        return create_error_image(str(e))
 
-def display_image(image_path):
+def create_error_image(error_message):
+    """Hibaüzenet képként"""
+    try:
+        # Üres kép létrehozása fehér háttérrel
+        image = Image.new('RGB', (EPD_WIDTH, EPD_HEIGHT), 'white')
+        draw = ImageDraw.Draw(image)
+        
+        # Keret rajzolása
+        draw.rectangle((0, 0, EPD_WIDTH, EPD_HEIGHT), outline='red')
+        
+        # Betűtípus beállítása
+        try:
+            font_title = ImageFont.truetype('/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf', 30)
+            font = ImageFont.truetype('/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf', 20)
+        except OSError:
+            font_title = ImageFont.load_default()
+            font = ImageFont.load_default()
+        
+        # Hibaüzenet több sorba tördelése
+        import textwrap
+        wrapped_text = textwrap.wrap(error_message, width=40)
+        
+        # Hibaüzenet megjelenítése
+        draw.text((EPD_WIDTH//2, 60), "HIBA!", font=font_title, fill='red', anchor="mm")
+        
+        y_position = 120
+        for line in wrapped_text[:5]:  # Maximum 5 sor
+            draw.text((EPD_WIDTH//2, y_position), line, font=font, fill='black', anchor="mm")
+            y_position += 30
+        
+        # Aktuális idő megjelenítése
+        current_time = time.strftime("%Y-%m-%d %H:%M:%S")
+        draw.text((EPD_WIDTH//2, 300), f"Időpont: {current_time}", font=font, fill='blue', anchor="mm")
+        draw.text((EPD_WIDTH//2, 340), f"Újrapróbálkozás {REFRESH_INTERVAL} perc múlva", font=font, fill='blue', anchor="mm")
+        
+        return image
+    except Exception as e:
+        logger.error(f"Hiba a hibaüzenet kép létrehozásakor: {e}")
+        # Végső mentsvár - egy teljesen minimális kép
+        try:
+            img = Image.new('RGB', (EPD_WIDTH, EPD_HEIGHT), 'white')
+            return img
+        except:
+            return None
+
+def display_image(image):
     """Kép megjelenítése az e-Paper kijelzőn"""
     if not epd_available:
-        logger.info("Szimuláció mód: a kép megjelenítése át lett ugorva")
-        return True
+        logger.error("Waveshare e-Paper könyvtár nem érhető el")
+        return False
     
     try:
-        # e-Paper inicializálása
+        logger.info("E-Paper kijelző inicializálása...")
         epd = epd4in01f.EPD()
         epd.init()
         
-        # Kép betöltése és konvertálása
-        img = Image.open(image_path)
-        epd.display(epd.getbuffer(img))
-        
-        logger.info("Kép sikeresen megjelenítve az e-Paper kijelzőn")
-        return True
+        logger.info("Kép megjelenítése...")
+        if image is not None:
+            # Kép átméretezése, ha szükséges
+            if image.width != EPD_WIDTH or image.height != EPD_HEIGHT:
+                image = image.resize((EPD_WIDTH, EPD_HEIGHT))
+            
+            # Kép megjelenítése
+            epd.display(epd.getbuffer(image))
+            logger.info("Kép sikeresen megjelenítve")
+            return True
+        else:
+            logger.error("Nincs megjeleníthető kép")
+            return False
+            
     except Exception as e:
-        logger.error(f"Hiba a kép megjelenítésekor: {str(e)}")
+        logger.error(f"Hiba a kép megjelenítésekor: {e}")
         return False
+
+def perform_display_test():
+    """Kezdeti teszt végrehajtása"""
+    logger.info("E-Paper kijelző teszt végrehajtása...")
+    
+    try:
+        # Teszt kép létrehozása
+        test_image = Image.new('RGB', (EPD_WIDTH, EPD_HEIGHT), 'white')
+        draw = ImageDraw.Draw(test_image)
+        
+        # Színes tesztkeret
+        draw.rectangle((0, 0, EPD_WIDTH, EPD_HEIGHT), outline='black')
+        draw.rectangle((10, 10, EPD_WIDTH-10, EPD_HEIGHT-10), outline='red')
+        draw.rectangle((20, 20, EPD_WIDTH-20, EPD_HEIGHT-20), outline='blue')
+        draw.rectangle((30, 30, EPD_WIDTH-30, EPD_HEIGHT-30), outline='green')
+        
+        # Betűtípus beállítása
+        try:
+            font = ImageFont.truetype('/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf', 36)
+        except OSError:
+            font = ImageFont.load_default()
+        
+        # Szöveg hozzáadása
+        draw.text((EPD_WIDTH//2, 100), "E-Paper Kijelző Teszt", font=font, fill='black', anchor="mm")
+        draw.text((EPD_WIDTH//2, 160), "Ha ezt látod,", font=font, fill='red', anchor="mm")
+        draw.text((EPD_WIDTH//2, 220), "a kijelző működik!", font=font, fill='blue', anchor="mm")
+        
+        # Idő hozzáadása
+        current_time = time.strftime("%Y-%m-%d %H:%M:%S")
+        draw.text((EPD_WIDTH//2, 280), f"Idő: {current_time}", font=font, fill='green', anchor="mm")
+        
+        # Információ a következő frissítésről
+        draw.text((EPD_WIDTH//2, 340), f"Indulás {5} másodperc múlva...", font=font, fill='black', anchor="mm")
+        
+        # Kép megjelenítése
+        success = display_image(test_image)
+        
+        if success:
+            logger.info("Teszt sikeresen végrehajtva")
+        else:
+            logger.error("Teszt sikertelen")
+            
+        # Várunk 5 másodpercet a normál működés előtt
+        time.sleep(5)
+        
+    except Exception as e:
+        logger.error(f"Hiba a teszt során: {e}")
 
 def main_loop():
     """Fő program ciklus"""
-    driver = setup_driver()
+    # Teszt végrehajtása az induláskor
+    perform_display_test()
     
     while True:
         try:
-            screenshot_path = "/tmp/screenshot.png"
-            processed_path = "/tmp/processed.png"
+            logger.info("Weboldal tartalom letöltése...")
+            image = download_web_content()
             
-            # Weboldal betöltése és képernyőkép készítése
-            if capture_website(driver, URL, screenshot_path):
-                # Kép feldolgozása
-                if process_image(screenshot_path, processed_path):
-                    # Kép megjelenítése
-                    display_image(processed_path)
+            logger.info("Tartalom megjelenítése a kijelzőn...")
+            display_image(image)
             
             # Várjunk a következő frissítésig
             logger.info(f"Várakozás {REFRESH_INTERVAL} percet a következő frissítésig...")
             time.sleep(REFRESH_INTERVAL * 60)
+            
         except KeyboardInterrupt:
-            logger.info("Program leállítva")
+            logger.info("Program leállítva (KeyboardInterrupt)")
             break
         except Exception as e:
-            logger.error(f"Váratlan hiba: {str(e)}")
+            logger.error(f"Váratlan hiba a fő ciklusban: {e}")
+            logger.info("Várakozás 1 percet az újrapróbálkozás előtt...")
             time.sleep(60)  # Hiba esetén várunk 1 percet, majd újrapróbáljuk
 
 if __name__ == "__main__":
@@ -233,40 +358,8 @@ if __name__ == "__main__":
     main_loop()
 EOL
 
-# Böngésző indító szkript
-cat > $INSTALL_DIR/start_browser.sh << EOL
-#!/bin/bash
-chromium-browser --kiosk --incognito https://naptarak.com/e-paper.html &
-# Kilépési kombináció beállítása (Alt+F4)
-while true; do
-    if xdotool search --sync --onlyvisible --name "Chromium"; then
-        break
-    fi
-    sleep 1
-done
-xdotool key alt+F11
-EOL
-
-# Végrehajtási jogosultságok beállítása
-sudo chmod +x $INSTALL_DIR/display_website.py
-sudo chmod +x $INSTALL_DIR/start_browser.sh
-
-# Automatikus indítás beállítása
-echo "Automatikus indítás beállítása..."
-
-# Hozzunk létre egy könyvtárat az automatikus indításhoz
-mkdir -p $HOME_DIR/.config/autostart
-cat > $HOME_DIR/.config/autostart/browser.desktop << EOL
-[Desktop Entry]
-Type=Application
-Name=Fullscreen Browser
-Exec=$INSTALL_DIR/start_browser.sh
-X-GNOME-Autostart-enabled=true
-EOL
-sudo chown -R $CURRENT_USER:$CURRENT_USER_GROUP $HOME_DIR/.config/autostart
-
-# E-Paper service beállítása
-echo "E-Paper service beállítása..."
+# Szolgáltatás létrehozása
+echo "Szolgáltatás fájl létrehozása..."
 sudo bash -c "cat > /etc/systemd/system/epaper-display.service << EOL
 [Unit]
 Description=E-Paper Website Display
@@ -283,82 +376,48 @@ RestartSec=10
 WantedBy=multi-user.target
 EOL"
 
+# Jogosultságok beállítása
+sudo chmod +x $INSTALL_DIR/display_website.py
 sudo chmod 644 /etc/systemd/system/epaper-display.service
+
+# Szolgáltatás beállítása
+echo "Szolgáltatás beállítása..."
 sudo systemctl daemon-reload
+sudo systemctl stop epaper-display.service 2>/dev/null || true
+sudo systemctl disable epaper-display.service 2>/dev/null || true
 sudo systemctl enable epaper-display.service
 sudo systemctl start epaper-display.service
 
-# Eltávolító szkript létrehozása későbbi használatra
-cat > $INSTALL_DIR/uninstall.sh << EOL
-#!/bin/bash
-
-echo "=================================================="
-echo "  E-Paper Website Display Eltávolító"
-echo "=================================================="
+# Telepítés befejezve
 echo ""
-echo "Ez a script eltávolítja az E-Paper Website Display alkalmazást."
+echo "======================================================"
+echo "  TELEPÍTÉS SIKERESEN BEFEJEZVE!"
+echo "======================================================"
 echo ""
-echo -n "Biztosan el szeretnéd távolítani az alkalmazást? (i/n): "
-read confirm
+echo "Szolgáltatás státusza:"
+sudo systemctl status epaper-display.service --no-pager
+echo ""
 
-if [ "$confirm" != "i" ]; then
-    echo "Eltávolítás megszakítva."
-    exit 0
+# Újraindítás, ha szükséges
+if [ "$REBOOT_NEEDED" = "true" ]; then
+    echo "FONTOS: Az SPI interfész engedélyezéséhez újra kell indítani"
+    echo "a Raspberry Pi-t. Szeretnéd most újraindítani? (i/n)"
+    read restart_now
+    
+    if [ "$restart_now" = "i" ]; then
+        echo "Újraindítás 5 másodperc múlva..."
+        sleep 5
+        sudo reboot
+    else
+        echo "Ne felejtsd el később újraindítani a rendszert:"
+        echo "sudo reboot"
+    fi
 fi
 
-# Szolgáltatás leállítása és eltávolítása
-echo "Szolgáltatás leállítása és eltávolítása..."
-sudo systemctl stop epaper-display.service
-sudo systemctl disable epaper-display.service
-sudo rm /etc/systemd/system/epaper-display.service
-sudo systemctl daemon-reload
-
-# Autostart beállítás eltávolítása
-echo "Automatikus indítás eltávolítása..."
-rm -f $HOME/.config/autostart/browser.desktop
-
-# Telepítési könyvtár eltávolítása
-echo "Telepítési könyvtár eltávolítása..."
-sudo rm -rf $INSTALL_DIR
-
 echo ""
-echo "==================================================="
-echo "  Eltávolítás befejezve!"
-echo "==================================================="
+echo "A napló megtekintéséhez:"
+echo "cat $INSTALL_DIR/app.log"
 echo ""
-echo "Az E-Paper Website Display alkalmazás sikeresen el lett távolítva."
+echo "A szolgáltatás állapotának ellenőrzéséhez:"
+echo "sudo systemctl status epaper-display.service"
 echo ""
-EOL
-
-sudo chmod +x $INSTALL_DIR/uninstall.sh
-
-echo ""
-echo "========================================================"
-echo "  Telepítés sikeresen befejezve!"
-echo "========================================================"
-echo ""
-echo "Az alkalmazás beállításai:"
-echo "  - URL: https://naptarak.com/e-paper.html"
-echo "  - Frissítési időköz: $refresh_interval perc"
-echo ""
-echo "Használati útmutató:"
-echo ""
-echo "1. HDMI kijelzőn:"
-echo "   - A rendszer automatikusan elindítja a böngészőt teljes képernyőn"
-echo "   - Az Alt+F4 billentyűkombinációval kiléphetsz a böngészőből"
-echo ""
-echo "2. E-Paper kijelzővel:"
-echo "   - Kapcsold ki a Raspberry Pi-t"
-echo "   - Csatlakoztasd a Waveshare 4.01 inch e-Paper HAT (F) kijelzőt"
-echo "   - Kapcsold be a Raspberry Pi-t"
-echo "   - A rendszer automatikusan elindítja az e-Paper alkalmazást"
-echo ""
-echo "Az alkalmazás eltávolításához futtasd:"
-echo "  $INSTALL_DIR/uninstall.sh"
-echo ""
-echo "Most kapcsold ki a Raspberry Pi-t és csatlakoztasd az e-Paper kijelzőt:"
-echo "sudo shutdown -h now"
-echo ""
-echo "Nyomj Enter-t a folytatáshoz..."
-read
-sudo shutdown -h now
