@@ -1,16 +1,28 @@
 #!/bin/bash
 
-# E-Paper Website Display Telepítő (Javított)
-# Készítette: Claude
+# E-Paper Website Display Teljesen Automatikus Telepítő
+# v1.0
 
-echo "=================================================="
-echo "  E-Paper Website Display Telepítő (Javított)"
-echo "=================================================="
+# Kilépés hiba esetén
+set -e
+
+echo "========================================================"
+echo "  E-Paper Website Display Automatikus Telepítő"
+echo "========================================================"
+echo ""
+echo "Ez a szkript automatikusan telepíti és beállítja az"
+echo "e-Paper kijelző alkalmazást a Raspberry Pi Zero 2W-re."
 echo ""
 
-# Telepítési könyvtár létrehozása
-INSTALL_DIR="/home/pi/e-paper-display"
-mkdir -p $INSTALL_DIR
+# Csomagkezelő javítása
+echo "Csomagkezelő javítása..."
+sudo dpkg --configure -a
+sudo apt-get update -y
+
+# Szükséges csomagok telepítése
+echo "Szükséges csomagok telepítése..."
+sudo apt-get install -y python3-pip python3-pil python3-numpy chromium-browser xdotool \
+                        python3-selenium python3-rpi.gpio python3-spidev git unclutter x11-xserver-utils
 
 # Frissítési időköz beállítása
 DEFAULT_REFRESH=5
@@ -29,35 +41,33 @@ fi
 echo "A kijelző $refresh_interval percenként fog frissülni."
 echo ""
 
-# Szükséges csomagok telepítése apt segítségével
-echo "Szükséges csomagok telepítése..."
-sudo apt-get update
-sudo apt-get install -y python3-pip python3-pil python3-numpy chromium-browser unclutter x11-xserver-utils xdotool python3-venv
-
-# Virtuális környezet létrehozása
-echo "Python virtuális környezet létrehozása..."
-python3 -m venv $INSTALL_DIR/venv
-source $INSTALL_DIR/venv/bin/activate
-
-# Python csomagok telepítése a virtuális környezetbe
-echo "Python csomagok telepítése..."
-$INSTALL_DIR/venv/bin/pip install selenium webdriver-manager RPi.GPIO spidev
+# Telepítési könyvtár létrehozása
+INSTALL_DIR="/home/pi/e-paper-display"
+echo "Telepítési könyvtár létrehozása: $INSTALL_DIR"
+sudo rm -rf $INSTALL_DIR
+sudo mkdir -p $INSTALL_DIR
+sudo chown -R pi:pi $INSTALL_DIR
 
 # Waveshare e-Paper könyvtár telepítése
 echo "Waveshare e-Paper könyvtár telepítése..."
 cd /tmp
+sudo rm -rf e-Paper
 git clone https://github.com/waveshare/e-Paper.git
-cp -r e-Paper/RaspberryPi_JetsonNano/python/lib/waveshare_epd $INSTALL_DIR/
-cp -r e-Paper/RaspberryPi_JetsonNano/python/pic $INSTALL_DIR/
+sudo cp -r e-Paper/RaspberryPi_JetsonNano/python/lib/waveshare_epd $INSTALL_DIR/
+sudo cp -r e-Paper/RaspberryPi_JetsonNano/python/pic $INSTALL_DIR/
+sudo chown -R pi:pi $INSTALL_DIR
 
-# Alkalmazás fájlok másolása
-echo "Alkalmazás fájlok másolása..."
+# Alkalmazás fájlok létrehozása
+echo "Alkalmazás fájlok létrehozása..."
+
+# Konfigurációs fájl
 cat > $INSTALL_DIR/config.ini << EOL
 [Settings]
 url = https://naptarak.com/e-paper.html
 refresh_interval = $refresh_interval
 EOL
 
+# Python alkalmazás
 cat > $INSTALL_DIR/display_website.py << 'EOL'
 #!/usr/bin/env python3
 # -*- coding:utf-8 -*-
@@ -67,7 +77,7 @@ import sys
 import time
 import configparser
 import logging
-from PIL import Image, ImageOps
+from PIL import Image
 from selenium import webdriver
 from selenium.webdriver.chrome.options import Options
 from selenium.webdriver.chrome.service import Service
@@ -212,10 +222,7 @@ if __name__ == "__main__":
     main_loop()
 EOL
 
-# Automatikus indítás beállítása
-echo "Automatikus indítás beállítása..."
-
-# Létrehozzuk az asztalra a weboldal megjelenítő szkriptet
+# Böngésző indító szkript
 cat > $INSTALL_DIR/start_browser.sh << EOL
 #!/bin/bash
 chromium-browser --kiosk --incognito https://naptarak.com/e-paper.html &
@@ -229,18 +236,27 @@ done
 xdotool key alt+F11
 EOL
 
-# HDMI kijelzőn futó alkalmazás beállítása
-mkdir -p /home/pi/.config/autostart
-cat > /home/pi/.config/autostart/browser.desktop << EOL
+# Végrehajtási jogosultságok beállítása
+sudo chmod +x $INSTALL_DIR/display_website.py
+sudo chmod +x $INSTALL_DIR/start_browser.sh
+
+# Automatikus indítás beállítása
+echo "Automatikus indítás beállítása..."
+
+# Hozzunk létre egy könyvtárat az automatikus indításhoz
+sudo mkdir -p /home/pi/.config/autostart
+sudo cat > /home/pi/.config/autostart/browser.desktop << EOL
 [Desktop Entry]
 Type=Application
 Name=Fullscreen Browser
 Exec=/home/pi/e-paper-display/start_browser.sh
 X-GNOME-Autostart-enabled=true
 EOL
+sudo chown -R pi:pi /home/pi/.config
 
 # E-Paper service beállítása
-cat > /tmp/epaper-display.service << EOL
+echo "E-Paper service beállítása..."
+sudo bash -c 'cat > /etc/systemd/system/epaper-display.service << EOL
 [Unit]
 Description=E-Paper Website Display
 After=network.target
@@ -248,29 +264,73 @@ After=network.target
 [Service]
 User=pi
 WorkingDirectory=/home/pi/e-paper-display
-ExecStart=/home/pi/e-paper-display/venv/bin/python /home/pi/e-paper-display/display_website.py
+ExecStart=/usr/bin/python3 /home/pi/e-paper-display/display_website.py
 Restart=always
 RestartSec=10
 
 [Install]
 WantedBy=multi-user.target
-EOL
+EOL'
 
-sudo mv /tmp/epaper-display.service /etc/systemd/system/
 sudo chmod 644 /etc/systemd/system/epaper-display.service
 sudo systemctl daemon-reload
 sudo systemctl enable epaper-display.service
+sudo systemctl start epaper-display.service
 
-# Végrehajtási jogosultságok beállítása
-chmod +x $INSTALL_DIR/display_website.py
-chmod +x $INSTALL_DIR/start_browser.sh
+# Eltávolító szkript létrehozása későbbi használatra
+cat > $INSTALL_DIR/uninstall.sh << 'EOL'
+#!/bin/bash
+
+echo "=================================================="
+echo "  E-Paper Website Display Eltávolító"
+echo "=================================================="
+echo ""
+echo "Ez a script eltávolítja az E-Paper Website Display alkalmazást."
+echo ""
+echo -n "Biztosan el szeretnéd távolítani az alkalmazást? (i/n): "
+read confirm
+
+if [ "$confirm" != "i" ]; then
+    echo "Eltávolítás megszakítva."
+    exit 0
+fi
+
+# Szolgáltatás leállítása és eltávolítása
+echo "Szolgáltatás leállítása és eltávolítása..."
+sudo systemctl stop epaper-display.service
+sudo systemctl disable epaper-display.service
+sudo rm /etc/systemd/system/epaper-display.service
+sudo systemctl daemon-reload
+
+# Autostart beállítás eltávolítása
+echo "Automatikus indítás eltávolítása..."
+rm -f /home/pi/.config/autostart/browser.desktop
+
+# Telepítési könyvtár eltávolítása
+echo "Telepítési könyvtár eltávolítása..."
+sudo rm -rf /home/pi/e-paper-display
 
 echo ""
 echo "==================================================="
-echo "  Telepítés befejezve!"
+echo "  Eltávolítás befejezve!"
 echo "==================================================="
 echo ""
-echo "Hogyan használd:"
+echo "Az E-Paper Website Display alkalmazás sikeresen el lett távolítva."
+echo ""
+EOL
+
+sudo chmod +x $INSTALL_DIR/uninstall.sh
+
+echo ""
+echo "========================================================"
+echo "  Telepítés sikeresen befejezve!"
+echo "========================================================"
+echo ""
+echo "Az alkalmazás beállításai:"
+echo "  - URL: https://naptarak.com/e-paper.html"
+echo "  - Frissítési időköz: $refresh_interval perc"
+echo ""
+echo "Használati útmutató:"
 echo ""
 echo "1. HDMI kijelzőn:"
 echo "   - A rendszer automatikusan elindítja a böngészőt teljes képernyőn"
@@ -282,11 +342,8 @@ echo "   - Csatlakoztasd a Waveshare 4.01 inch e-Paper HAT (F) kijelzőt"
 echo "   - Kapcsold be a Raspberry Pi-t"
 echo "   - A rendszer automatikusan elindítja az e-Paper alkalmazást"
 echo ""
-echo "A frissítési időköz módosításához szerkeszd a következő fájlt:"
-echo "/home/pi/e-paper-display/config.ini"
-echo ""
-echo "A Raspberry Pi újraindításához használd a következő parancsot:"
-echo "sudo reboot"
+echo "Az alkalmazás eltávolításához futtasd:"
+echo "  /home/pi/e-paper-display/uninstall.sh"
 echo ""
 echo "Most kapcsold ki a Raspberry Pi-t és csatlakoztasd az e-Paper kijelzőt:"
 echo "sudo shutdown -h now"
