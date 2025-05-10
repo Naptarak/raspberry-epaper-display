@@ -25,18 +25,28 @@ echo "Rendszercsomag frissítése..."
 apt-get update
 apt-get upgrade -y
 
+# libtiff csomag ellenőrzése (különböző verziók támogatása)
+TIFF_PACKAGE="libtiff5"
+if ! apt-cache show libtiff5 &>/dev/null; then
+  echo "libtiff5 csomag nem található, alternatív csomagok keresése..."
+  if apt-cache show libtiff6 &>/dev/null; then
+    TIFF_PACKAGE="libtiff6"
+  elif apt-cache show libtiff &>/dev/null; then
+    TIFF_PACKAGE="libtiff"
+  else
+    echo "Nem található kompatibilis libtiff csomag. Telepítés libtiff nélkül folytatódik."
+    TIFF_PACKAGE=""
+  fi
+fi
+
 # Szükséges csomagok telepítése
 echo "Szükséges csomagok telepítése..."
-apt-get install -y \
-  python3-pip \
-  python3-pil \
-  python3-numpy \
-  libopenjp2-7 \
-  libtiff5 \
-  libatlas-base-dev \
-  git \
-  wget \
-  imagemagick
+PACKAGES="python3-pip python3-pil python3-numpy libopenjp2-7 libatlas-base-dev git wget imagemagick"
+if [ -n "$TIFF_PACKAGE" ]; then
+  PACKAGES="$PACKAGES $TIFF_PACKAGE"
+fi
+
+apt-get install -y $PACKAGES
 
 # Python könyvtárak telepítése
 echo "Python könyvtárak telepítése..."
