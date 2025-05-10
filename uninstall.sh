@@ -1,40 +1,33 @@
 #!/bin/bash
 
-# uninstall.sh - Eltávolító script a Waveshare 4.01 HAT (F) e-paper kijelző alkalmazáshoz
+# E-Paper kijelző alkalmazás eltávolító szkript
 
-echo "Waveshare 4.01 HAT (F) E-paper kijelző eltávolító script"
-echo "======================================================"
+echo "===================================================="
+echo "E-paper kijelző alkalmazás eltávolítása"
+echo "===================================================="
 
-# Ellenőrizzük, hogy root jogosultsággal fut-e a script
-if [ "$(id -u)" -ne 0 ]; then
-    echo "Hiba: Az eltávolítót root jogosultsággal kell futtatni!" >&2
-    echo "Használja a 'sudo bash uninstall.sh' parancsot." >&2
-    exit 1
+# Kilépés hiba esetén
+set -e
+
+# Ellenőrizzük, hogy root-ként fut-e
+if [ "$EUID" -ne 0 ]; then
+  echo "Kérlek root-ként futtasd (használj sudo-t)"
+  exit 1
 fi
 
-# Systemd service leállítása és eltávolítása
-echo "Systemd service leállítása és eltávolítása..."
-systemctl stop e-paper-display.service
-systemctl disable e-paper-display.service
+# Szolgáltatás megállítása és letiltása
+echo "Szolgáltatás megállítása és letiltása..."
+systemctl stop e-paper-display.service || true
+systemctl disable e-paper-display.service || true
 rm -f /etc/systemd/system/e-paper-display.service
 systemctl daemon-reload
 
-# Telepítési könyvtár eltávolítása
-INSTALL_DIR="/opt/e-paper-display"
-echo "Telepítési könyvtár eltávolítása: $INSTALL_DIR"
-rm -rf "$INSTALL_DIR"
+# Alkalmazás könyvtár törlése
+echo "Alkalmazásfájlok törlése..."
+APP_DIR="/opt/e-paper-display"
+rm -rf "$APP_DIR"
 
-# Logfájl eltávolítása
-echo "Naplófájl eltávolítása..."
-rm -f /var/log/e-paper-display.log
-
-# Ideiglenes fájlok eltávolítása
-echo "Ideiglenes fájlok eltávolítása..."
-rm -f /tmp/screenshot.png
-rm -f /tmp/temp_page.html
-rm -f /tmp/image.png
-
-echo ""
-echo "Eltávolítás befejezve!"
-echo "Az e-paper kijelző alkalmazás eltávolításra került."
-echo ""
+echo "Az e-paper kijelző alkalmazás eltávolítva."
+echo "Megjegyzés: Ez a szkript nem távolította el a rendszercsomagokat vagy Python könyvtárakat,"
+echo "amelyeket más alkalmazások is használhatnak."
+echo "===================================================="
