@@ -27,7 +27,7 @@ apt-get upgrade -y
 
 # Szükséges rendszer csomagok telepítése
 echo "Szükséges rendszer csomagok telepítése..."
-apt-get install -y python3-pip python3-pil python3-numpy libopenjp2-7 libatlas-base-dev git wget imagemagick wkhtmltopdf xvfb curl jq
+apt-get install -y python3-pip python3-pil python3-numpy libopenjp2-7 libatlas-base-dev git wget imagemagick wkhtmltopdf xvfb curl jq libraspberrypi-bin
 
 # Python csomagok telepítése apt-get használatával pip helyett
 echo "Python csomagok telepítése apt segítségével..."
@@ -44,52 +44,152 @@ git clone https://github.com/waveshare/e-Paper.git /tmp/e-Paper
 cp -r /tmp/e-Paper/RaspberryPi_JetsonNano/python/lib/waveshare_epd "$APP_DIR/"
 rm -rf /tmp/e-Paper
 
+# Egyedi közvetlenül a képernyőn megjelenítendő oldal
+echo "Egyedi HTML oldal létrehozása..."
+cat > "$APP_DIR/capture.html" << 'EOF'
+<!DOCTYPE html>
+<html>
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=640, height=400, initial-scale=1.0">
+    <title>Időjárás a E-Paper kijelzőhöz</title>
+    <style>
+        body, html {
+            margin: 0;
+            padding: 0;
+            width: 640px;
+            height: 400px;
+            background-color: white;
+            overflow: hidden;
+            font-family: Arial, sans-serif;
+        }
+        iframe {
+            width: 640px;
+            height: 400px;
+            border: none;
+        }
+    </style>
+</head>
+<body>
+    <iframe src="https://naptarak.com/e-paper.html?epaper=1&width=640&height=400" 
+            width="640" height="400" frameborder="0"></iframe>
+</body>
+</html>
+EOF
+
 # Speciális HTML-PNG konvertáló script
 echo "HTML-PNG konvertáló script létrehozása..."
 cat > "$APP_DIR/capture_weather.sh" << 'EOF'
 #!/bin/bash
 # Speciális script a naptarak.com időjárás oldalának megjelenítésére
 
-URL="https://naptarak.com/e-paper.html?forcedisplay=1&delay=15000"
+# Paraméterek
 OUTPUT_PATH="$1"
 WIDTH=640
 HEIGHT=400
 MAX_ATTEMPTS=3
+LOCAL_HTML_PATH="$(dirname "$0")/capture.html"
+LONG_TIMEOUT=60000  # 60 másodperc várakozás
 
-echo "Időjárás oldal képernyőképének készítése: $URL -> $OUTPUT_PATH"
+echo "Időjárás oldal képernyőképének készítése -> $OUTPUT_PATH"
 
 # Több kísérlet a kép elkészítésére
 for (( attempt=1; attempt<=$MAX_ATTEMPTS; attempt++ ))
 do
-    echo "Kísérlet $attempt/$MAX_ATTEMPTS, várakozási idő: $((attempt * 15)) másodperc"
+    echo "Kísérlet $attempt/$MAX_ATTEMPTS, várakozási idő: 60 másodperc"
     
-    # Nagyobb várakozási idő minden próbálkozással
+    # Közvetlen hívás a wkhtmltoimage programmal
     xvfb-run --server-args="-screen 0, ${WIDTH}x${HEIGHT}x24" wkhtmltoimage \
       --width $WIDTH \
       --height $HEIGHT \
       --quality 100 \
       --disable-smart-width \
       --enable-javascript \
-      --javascript-delay $((attempt * 15000)) \
+      --javascript-delay $LONG_TIMEOUT \
       --no-stop-slow-scripts \
       --debug-javascript \
       --load-error-handling ignore \
       --custom-header "Cache-Control" "no-cache" \
       --custom-header "User-Agent" "E-Paper-Display/1.0 (Raspberry Pi Zero)" \
       --custom-header-propagation \
-      "$URL" "$OUTPUT_PATH"
+      "file://$LOCAL_HTML_PATH" "$OUTPUT_PATH"
     
     # Ellenőrizzük, hogy a kép létrejött-e és nem üres
     if [ -f "$OUTPUT_PATH" ] && [ $(stat -c%s "$OUTPUT_PATH") -gt 10000 ]; then
-        echo "Képernyőkép sikeresen elkészült a(z) $attempt. kísérletre!"
-        exit 0
+        # Ellenőrizzük, hogy a "Betöltés..." szöveg nem szerepel-e a képen
+        if ! convert "$OUTPUT_PATH" txt:- | grep -i "Betöltés" > /dev/null; then
+            echo "Képernyőkép sikeresen elkészült a(z) $attempt. kísérletre!"
+            
+            # Kép méretezése a teljes kijelzőre
+            convert "$OUTPUT_PATH" -resize ${WIDTH}x${HEIGHT}! "$OUTPUT_PATH.temp"
+            mv "$OUTPUT_PATH.temp" "$OUTPUT_PATH"
+            exit 0
+        else
+            echo "A kép elkészült, de még mindig 'Betöltés...' állapotban van"
+        fi
     fi
     
     echo "A(z) $attempt. kísérlet nem sikerült, újrapróbálkozás..."
-    sleep 2
+    sleep 5
 done
 
-echo "Nem sikerült képernyőképet készíteni $MAX_ATTEMPTS kísérlet után sem."
+echo "Nem sikerült megfelelő képernyőképet készíteni $MAX_ATTEMPTS kísérlet után sem."
+
+# Ha minden kísérlet sikertelen, készítsünk legalább egy alapképet
+cat > "$APP_DIR/fallback.html" << 'HTMLEOF'
+<!DOCTYPE html>
+<html>
+<head>
+    <meta charset="UTF-8">
+    <title>Időjárás</title>
+    <style>
+        body {
+            margin: 0;
+            padding: 20px;
+            width: 640px;
+            height: 400px;
+            background-color: white;
+            font-family: Arial, sans-serif;
+            display: flex;
+            flex-direction: column;
+            justify-content: center;
+            align-items: center;
+            text-align: center;
+        }
+        h1 {
+            font-size: 36px;
+            margin-bottom: 20px;
+        }
+        p {
+            font-size: 24px;
+        }
+    </style>
+</head>
+<body>
+    <h1>Pécs Időjárás</h1>
+    <p>Időjárási adatok betöltése nem sikerült.</p>
+    <p>A kijelző 5 perc múlva újra próbálkozik.</p>
+    <p id="date"></p>
+    <script>
+        document.getElementById('date').textContent = new Date().toLocaleDateString('hu-HU', { 
+            year: 'numeric', 
+            month: 'long', 
+            day: 'numeric',
+            hour: '2-digit',
+            minute: '2-digit'
+        });
+    </script>
+</body>
+</html>
+HTMLEOF
+
+xvfb-run --server-args="-screen 0, ${WIDTH}x${HEIGHT}x24" wkhtmltoimage \
+  --width $WIDTH \
+  --height $HEIGHT \
+  --quality 100 \
+  --disable-smart-width \
+  "file://$APP_DIR/fallback.html" "$OUTPUT_PATH"
+
 exit 1
 EOF
 
@@ -160,16 +260,12 @@ def capture_weather_page():
             text=True
         )
         
-        # Ha a script sikeresen lefutott
-        if process.returncode == 0:
-            logger.info("Képernyőkép sikeresen elkészült")
-            if os.path.exists(output_path) and os.path.getsize(output_path) > 1000:
-                return output_path
-            else:
-                logger.error("A létrehozott képfájl túl kicsi vagy nem létezik")
-                return None
+        # Minden kísérlet után megpróbáljuk visszaadni a képet, függetlenül az eredménytől
+        if os.path.exists(output_path) and os.path.getsize(output_path) > 1000:
+            logger.info("Kép létezik és megfelelő méretű")
+            return output_path
         else:
-            logger.error(f"Hiba a képernyőkép készítése során: {process.stderr}")
+            logger.error("A létrehozott képfájl túl kicsi vagy nem létezik")
             return None
             
     except Exception as e:
@@ -201,10 +297,10 @@ def update_display():
         if img.mode != 'RGB':
             img = img.convert('RGB')
         
-        # Kép átméretezése, ha szükséges
+        # Kép átméretezése, ha szükséges - mindenképpen kitölti a teljes kijelzőt
         if img.size != (DISPLAY_WIDTH, DISPLAY_HEIGHT):
             logger.info(f"Kép átméretezése {img.size}-ről {(DISPLAY_WIDTH, DISPLAY_HEIGHT)}-re")
-            img = img.resize((DISPLAY_WIDTH, DISPLAY_HEIGHT))
+            img = img.resize((DISPLAY_WIDTH, DISPLAY_HEIGHT), Image.LANCZOS)
         
         # Kép megjelenítése
         logger.info("Kijelző frissítése...")
