@@ -46,6 +46,9 @@ PACKAGES="python3-pip python3-pil python3-numpy libopenjp2-7 libatlas-base-dev g
 # HTML-PNG konverzióhoz szükséges csomagok
 PACKAGES="$PACKAGES wkhtmltopdf xvfb"
 
+# Chromium alapú rendereléshez (alternatíva)
+PACKAGES="$PACKAGES chromium-browser"
+
 if [ -n "$TIFF_PACKAGE" ]; then
   PACKAGES="$PACKAGES $TIFF_PACKAGE"
 fi
@@ -55,6 +58,9 @@ apt-get install -y $PACKAGES
 # Python csomagok telepítése apt-get használatával pip helyett
 echo "Python csomagok telepítése apt segítségével..."
 apt-get install -y python3-rpi.gpio python3-spidev python3-requests python3-pil python3-venv
+
+# Selenium és egyéb csomagok telepítése a jobb HTML rendereléshez
+apt-get install -y python3-selenium python3-bs4
 
 # Alkalmazás könyvtár létrehozása
 echo "Alkalmazás könyvtár létrehozása..."
@@ -79,19 +85,129 @@ OUTPUT="$2"
 WIDTH="${3:-640}"
 HEIGHT="${4:-400}"
 
-# Futtatás virtuális framebufferrel
+# Futtatás virtuális framebufferrel és megnövelt JavaScript várakozási idővel
 xvfb-run --server-args="-screen 0, ${WIDTH}x${HEIGHT}x24" wkhtmltoimage \
   --width $WIDTH \
   --height $HEIGHT \
   --quality 100 \
   --disable-smart-width \
   --enable-javascript \
-  --javascript-delay 1000 \
+  --javascript-delay 10000 \
   --no-stop-slow-scripts \
+  --debug-javascript \
+  --load-error-handling ignore \
+  --custom-header "Cache-Control" "no-cache" \
+  --custom-header-propagation \
   "$URL" "$OUTPUT"
+
+# Ellenőrizzük, hogy sikeres volt-e a konverzió
+if [ -f "$OUTPUT" ] && [ -s "$OUTPUT" ]; then
+  echo "Sikeres konverzió: $OUTPUT"
+  exit 0
+else
+  echo "Hiba a konverzió során!"
+  exit 1
+fi
 EOF
 
 chmod +x "$APP_DIR/html2png.sh"
+
+# Python alapú HTML-PNG konverter a Selenium segítségével
+echo "Selenium alapú HTML-PNG konverter létrehozása..."
+cat > "$APP_DIR/selenium_capture.py" << 'EOF'
+#!/usr/bin/env python3
+# -*- coding:utf-8 -*-
+
+import os
+import sys
+import time
+from selenium import webdriver
+from selenium.webdriver.chrome.options import Options
+from selenium.webdriver.common.by import By
+from selenium.webdriver.support.ui import WebDriverWait
+from selenium.webdriver.support import expected_conditions as EC
+
+def capture_page(url, output_path, width=640, height=400, wait_time=30):
+    """
+    Weboldal képernyőképének készítése Selenium és Chromium segítségével.
+    A script megvárja, amíg az oldal teljesen betöltődik, beleértve a JavaScript API hívásokat is.
+    """
+    print(f"Weboldal mentése képként: {url} -> {output_path}")
+    
+    # Chromium opciók beállítása
+    chrome_options = Options()
+    chrome_options.add_argument("--headless")
+    chrome_options.add_argument("--no-sandbox")
+    chrome_options.add_argument("--disable-dev-shm-usage")
+    chrome_options.add_argument(f"--window-size={width},{height}")
+    chrome_options.add_argument("--disable-gpu")
+    
+    try:
+        # Böngésző indítása
+        driver = webdriver.Chrome(options=chrome_options)
+        driver.set_window_size(width, height)
+        
+        # Oldal betöltése
+        print("Oldal betöltése...")
+        driver.get(url)
+        
+        # Várakozás, hogy az oldal teljesen betöltődjön
+        # Először egy alapvető várakozás, hogy az oldal betöltsön
+        time.sleep(5)
+        
+        # Majd várunk, amíg a "Betöltés..." felirat eltűnik, vagy lejár az idő
+        try:
+            # Speciális várakozás, hogy az időjárási adatok betöltődjenek
+            print("Várakozás az időjárási adatok betöltődésére...")
+            for _ in range(wait_time):
+                page_content = driver.page_source.lower()
+                # Ellenőrizzük, van-e még "betöltés..." szöveg az oldalon
+                if "betöltés..." not in page_content and "--°c" not in page_content:
+                    print("Az adatok sikeresen betöltődtek!")
+                    break
+                time.sleep(1)
+        except Exception as e:
+            print(f"Várakozás hiba (folytatás): {e}")
+        
+        # Még egy kis plusz idő, hogy a megjelenítés befejeződjön
+        time.sleep(2)
+        
+        # Képernyőkép készítése
+        print("Képernyőkép készítése...")
+        driver.save_screenshot(output_path)
+        
+        # Böngésző bezárása
+        driver.quit()
+        
+        # Ellenőrizzük, hogy a képernyőkép sikeres volt-e
+        if os.path.exists(output_path) and os.path.getsize(output_path) > 0:
+            print(f"Képernyőkép sikeresen elmentve: {output_path}")
+            return True
+        else:
+            print("Hiba: üres képernyőkép fájl")
+            return False
+            
+    except Exception as e:
+        print(f"Hiba a képernyőkép készítése során: {e}")
+        return False
+
+if __name__ == "__main__":
+    # Parancssori argumentumok ellenőrzése
+    if len(sys.argv) < 3:
+        print("Használat: python selenium_capture.py <url> <output_path> [width] [height] [wait_time]")
+        sys.exit(1)
+    
+    url = sys.argv[1]
+    output_path = sys.argv[2]
+    width = int(sys.argv[3]) if len(sys.argv) > 3 else 640
+    height = int(sys.argv[4]) if len(sys.argv) > 4 else 400
+    wait_time = int(sys.argv[5]) if len(sys.argv) > 5 else 30
+    
+    success = capture_page(url, output_path, width, height, wait_time)
+    sys.exit(0 if success else 1)
+EOF
+
+chmod +x "$APP_DIR/selenium_capture.py"
 
 # Fő Python script létrehozása
 echo "Kijelző script létrehozása..."
@@ -108,6 +224,7 @@ from PIL import Image
 from io import BytesIO
 import sys
 import signal
+import tempfile
 
 # Waveshare e-paper kijelző könyvtár importálása
 sys.path.append(os.path.join(os.path.dirname(os.path.realpath(__file__)), 'waveshare_epd'))
@@ -145,6 +262,38 @@ def signal_handler(sig, frame):
             pass
     sys.exit(0)
 
+def capture_with_selenium(url, output_path):
+    """Selenium használata a HTML tartalom renderelésére és PNG képpé konvertálására"""
+    logger.info(f"Weboldal renderelése Selenium segítségével: {url}")
+    
+    selenium_script = os.path.join(os.path.dirname(os.path.realpath(__file__)), "selenium_capture.py")
+    
+    try:
+        # Selenium script futtatása a képernyőkép készítéséhez
+        result = subprocess.run(
+            ["python3", selenium_script, url, output_path, str(DISPLAY_WIDTH), str(DISPLAY_HEIGHT), "45"],
+            capture_output=True,
+            text=True,
+            check=True
+        )
+        
+        if os.path.exists(output_path) and os.path.getsize(output_path) > 0:
+            logger.info(f"Selenium képernyőkép sikeresen létrehozva: {output_path}")
+            return True
+        else:
+            logger.error("Selenium képernyőkép sikertelen, üres fájl")
+            return False
+    
+    except subprocess.CalledProcessError as e:
+        logger.error(f"Hiba a Selenium képernyőkép készítése során: {e}")
+        logger.error(f"STDOUT: {e.stdout}")
+        logger.error(f"STDERR: {e.stderr}")
+        return False
+    
+    except Exception as e:
+        logger.error(f"Váratlan hiba a Selenium képernyőkép készítése során: {e}")
+        return False
+
 def convert_html_to_png(url, output_path):
     """HTML tartalom konvertálása PNG képpé"""
     logger.info(f"HTML konvertálása PNG-vé: {url}")
@@ -179,41 +328,59 @@ def convert_html_to_png(url, output_path):
 
 def fetch_image():
     """
-    Kép letöltése először közvetlenül a weboldalról, ha az nem sikerül,
-    akkor a HTML konvertálása PNG-vé és annak betöltése.
+    Weboldal tartalmának megszerzése különböző módszerekkel.
+    Először a Selenium-ot próbáljuk, majd wkhtmltoimage-et.
     """
-    logger.info("Tartalom letöltése a weboldalról...")
+    logger.info("Tartalom letöltése a weboldalról különböző módszerekkel...")
     
+    # Ideiglenes fájlok létrehozása
+    selenium_output = os.path.join(os.path.dirname(os.path.realpath(__file__)), "temp_selenium.png")
+    wkhtml_output = os.path.join(os.path.dirname(os.path.realpath(__file__)), "temp_wkhtml.png")
+    
+    # 1. Először próbáljuk meg a Selenium-ot (jobb JavaScript támogatás)
+    logger.info("Próbálkozás Selenium-mal...")
+    if capture_with_selenium(URL, selenium_output):
+        try:
+            img = Image.open(selenium_output)
+            return img
+        except Exception as e:
+            logger.error(f"Hiba a Selenium kép megnyitásakor: {e}")
+    
+    # 2. Ha a Selenium nem működött, próbáljuk a wkhtmltoimage-et
+    logger.info("Próbálkozás wkhtmltoimage-gel...")
+    if convert_html_to_png(URL, wkhtml_output):
+        try:
+            img = Image.open(wkhtml_output)
+            return img
+        except Exception as e:
+            logger.error(f"Hiba a wkhtmltoimage kép megnyitásakor: {e}")
+    
+    # Ha egyik sem működött, ellenőrizzük a közvetlen kép lehetőségeket
+    logger.info("Próbálkozás közvetlen kép letöltéssel...")
     try:
-        # Először megpróbáljuk a közvetlen kép letöltést az eredeti módszerekkel
         headers = {
             'User-Agent': 'RaspberryPiZero/1.0 EPaperDisplay/1.0',
         }
         
-        # Próbáljuk meg közvetlenül a képet kérni
+        # Próbáljuk meg közvetlen paraméterrel
         response = requests.get(URL + "?direct=1", headers=headers, timeout=30)
         
         if response.status_code == 200:
             content_type = response.headers.get('Content-Type', '')
             if 'image' in content_type:
                 try:
-                    # Próbáljuk megnyitni a választ képként
                     img = Image.open(BytesIO(response.content))
                     logger.info("Kép közvetlenül letöltve az URL-ről")
                     return img
                 except Exception as e:
                     logger.error(f"Nem sikerült megnyitni a képet: {e}")
-            else:
-                logger.info("A válasz nem kép, konvertálás HTML-ről PNG-re...")
         
-        # Ha közvetlen kép nem elérhető, megpróbáljuk a meta tag keresést
+        # Meta tag keresése
         response = requests.get(URL, headers=headers, timeout=30)
         if response.status_code == 200:
-            # Meta tag keresése, amely tartalmazza a közvetlen kép linkjét
             html = response.text
             image_url = None
             
-            # Egyszerű elemzés az e-paper kép meta tag megtalálásához
             for line in html.split('\n'):
                 if 'meta' in line and 'e-paper-image' in line:
                     parts = line.split('content="')
@@ -227,22 +394,12 @@ def fetch_image():
                 if img_response.status_code == 200:
                     img = Image.open(BytesIO(img_response.content))
                     return img
-            
-            logger.info("Nem található kép URL, HTML-ről PNG-re konvertálunk...")
-        
-        # Ha sem közvetlen kép, sem meta tag nem működött, HTML-PNG konverzió
-        temp_png_path = os.path.join(os.path.dirname(os.path.realpath(__file__)), "temp_capture.png")
-        
-        if convert_html_to_png(URL, temp_png_path):
-            img = Image.open(temp_png_path)
-            return img
-        
-        logger.error("Nem sikerült sem letölteni, sem konvertálni a tartalmat")
-        return None
     
     except Exception as e:
-        logger.error(f"Hiba a tartalom letöltése/konvertálása során: {e}")
-        return None
+        logger.error(f"Hiba a közvetlen kép letöltése során: {e}")
+    
+    logger.error("Nem sikerült tartalmat szerezni egyik módszerrel sem")
+    return None
 
 def update_display():
     """Az e-paper kijelző frissítése a legújabb képpel."""
