@@ -1,199 +1,274 @@
 #!/bin/bash
 
-# install.sh - Telepítő script Raspberry Pi Zero 2W-hez és Waveshare 4.01 HAT (F) e-paper kijelzőhöz
+# E-Paper kijelző telepítő szkript Raspberry Pi Zero 2W-hez
+# Waveshare 4.01 HAT (F) e-paper kijelzőhöz
+# Frissítési gyakoriság: 5 perc
 
-echo "Waveshare 4.01 HAT (F) E-paper kijelző telepítő script"
-echo "======================================================"
+echo "===================================================="
+echo "E-Paper kijelző alkalmazás telepítése Raspberry Pi Zero 2W-re"
+echo "Kijelző: Waveshare 4.01 inch HAT (F) e-paper"
+echo "Tartalom forrás: https://naptarak.com/e-paper.html"
+echo "Frissítési gyakoriság: 5 perc"
+echo "===================================================="
 
-# Ellenőrizzük, hogy root jogosultsággal fut-e a script
-if [ "$(id -u)" -ne 0 ]; then
-    echo "Hiba: A telepítőt root jogosultsággal kell futtatni!" >&2
-    echo "Használja a 'sudo bash install.sh' parancsot." >&2
-    exit 1
+# Kilépés hiba esetén
+set -e
+
+# Ellenőrizzük, hogy root-ként fut-e
+if [ "$EUID" -ne 0 ]; then
+  echo "Kérlek root-ként futtasd (használj sudo-t)"
+  exit 1
 fi
 
-# Telepítési könyvtár létrehozása
-INSTALL_DIR="/opt/e-paper-display"
-echo "Telepítési könyvtár létrehozása: $INSTALL_DIR"
-mkdir -p "$INSTALL_DIR"
-
 # Rendszer frissítése
-echo "Rendszer frissítése..."
+echo "Rendszercsomag frissítése..."
 apt-get update
 apt-get upgrade -y
 
 # Szükséges csomagok telepítése
 echo "Szükséges csomagok telepítése..."
-apt-get install -y python3 python3-pip python3-pil python3-numpy git libopenjp2-7 libatlas-base-dev wget chromium-browser xvfb
+apt-get install -y \
+  python3-pip \
+  python3-pil \
+  python3-numpy \
+  libopenjp2-7 \
+  libtiff5 \
+  libatlas-base-dev \
+  git \
+  wget \
+  imagemagick
 
-# SPI interfész engedélyezése
-echo "SPI interfész engedélyezése..."
-if ! grep -q "dtparam=spi=on" /boot/config.txt; then
-    echo "dtparam=spi=on" >> /boot/config.txt
-    echo "SPI interfész engedélyezve. Újraindítás szükséges a változtatások érvényesítéséhez."
-else
-    echo "SPI interfész már engedélyezve van."
-fi
+# Python könyvtárak telepítése
+echo "Python könyvtárak telepítése..."
+pip3 install \
+  RPi.GPIO \
+  spidev \
+  requests \
+  pillow
 
-# Waveshare e-paper könyvtár letöltése
-echo "Waveshare e-paper könyvtár letöltése..."
-cd "$INSTALL_DIR"
-git clone https://github.com/waveshare/e-Paper.git
-cd e-Paper/RaspberryPi_JetsonNano/python
-pip3 install RPi.GPIO spidev
-pip3 install requests pillow
+# Alkalmazás könyvtár létrehozása
+echo "Alkalmazás könyvtár létrehozása..."
+APP_DIR="/opt/e-paper-display"
+mkdir -p "$APP_DIR"
 
-# E-paper display script létrehozása
-echo "E-paper display script létrehozása..."
-cat > "$INSTALL_DIR/e_paper_display.py" << 'EOL'
+# Waveshare e-Paper könyvtár klónozása
+echo "Waveshare e-Paper könyvtár letöltése..."
+git clone https://github.com/waveshare/e-Paper.git /tmp/e-Paper
+cp -r /tmp/e-Paper/RaspberryPi_JetsonNano/python/lib/waveshare_epd "$APP_DIR/"
+rm -rf /tmp/e-Paper
+
+# Fő Python script létrehozása
+echo "Kijelző script létrehozása..."
+cat > "$APP_DIR/display.py" << 'EOF'
 #!/usr/bin/env python3
 # -*- coding:utf-8 -*-
 
 import os
-import sys
 import time
+import logging
 import requests
 from PIL import Image
-import logging
-from datetime import datetime
-import subprocess
+from io import BytesIO
+import sys
+import signal
 
-# Konfiguráljuk a naplózást
+# Waveshare e-paper kijelző könyvtár importálása
+sys.path.append(os.path.join(os.path.dirname(os.path.realpath(__file__)), 'waveshare_epd'))
+from waveshare_epd import epd4in01f
+
+# Naplózás beállítása
 logging.basicConfig(
     level=logging.INFO,
     format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
     handlers=[
-        logging.FileHandler("/var/log/e-paper-display.log"),
+        logging.FileHandler(os.path.join(os.path.dirname(os.path.realpath(__file__)), "display.log")),
         logging.StreamHandler()
     ]
 )
-logger = logging.getLogger("e-paper-display")
+logger = logging.getLogger(__name__)
 
-# Waveshare e-Paper könyvtárak importálása
-waveshare_dir = os.path.join(os.path.dirname(os.path.realpath(__file__)), "e-Paper/RaspberryPi_JetsonNano/python/lib")
-sys.path.append(waveshare_dir)
+# Megjelenítendő URL
+URL = "https://naptarak.com/e-paper.html"
 
-try:
-    from waveshare_epd import epd4in01f
-except ImportError:
-    logger.error("Waveshare e-Paper könyvtár nem található!")
-    sys.exit(1)
+# Globális változó a kijelző objektumnak
+epd = None
 
-def capture_webpage_to_image():
-    """Weboldal képernyőképének mentése"""
+def signal_handler(sig, frame):
+    """Kezelő a tiszta kilépéshez"""
+    logger.info("Kilépés...")
+    global epd
+    if epd is not None:
+        try:
+            epd.sleep()
+        except:
+            pass
+    sys.exit(0)
+
+def fetch_image():
+    """
+    Kép letöltése közvetlenül a weboldalról.
+    A weboldal várhatóan egy, az e-paper kijelzőre optimalizált képet szolgáltat.
+    """
+    logger.info("Kép letöltése a weboldalról...")
+    
     try:
-        logger.info("Weboldal képernyőképének készítése...")
-        # Xvfb használata virtuális képernyőként
-        cmd = "xvfb-run --server-args='-screen 0, 640x400x24' " \
-              "chromium-browser --headless --disable-gpu " \
-              "--screenshot=/tmp/screenshot.png " \
-              "--window-size=640,400 " \
-              "https://naptarak.com/e-paper.html"
-        subprocess.run(cmd, shell=True, check=True)
-        return Image.open('/tmp/screenshot.png')
+        headers = {
+            'User-Agent': 'RaspberryPiZero/1.0 EPaperDisplay/1.0',
+        }
+        
+        # Próbáljuk meg közvetlenül a képet kérni
+        response = requests.get(URL + "?direct=1", headers=headers, timeout=30)
+        
+        if response.status_code == 200:
+            content_type = response.headers.get('Content-Type', '')
+            if 'image' in content_type:
+                try:
+                    # Próbáljuk megnyitni a választ képként
+                    img = Image.open(BytesIO(response.content))
+                    return img
+                except Exception as e:
+                    logger.error(f"Nem sikerült megnyitni a képet: {e}")
+            else:
+                logger.info("A válasz nem kép, kép keresése a HTML-ben...")
+        
+        # Ha a közvetlen kép nem érhető el, letöltjük a weboldalt és keresünk egy meta tag-et
+        response = requests.get(URL, headers=headers, timeout=30)
+        if response.status_code == 200:
+            # Meta tag keresése, amely tartalmazza a közvetlen kép linkjét
+            html = response.text
+            image_url = None
+            
+            # Egyszerű elemzés az e-paper kép meta tag megtalálásához
+            for line in html.split('\n'):
+                if 'meta' in line and 'e-paper-image' in line:
+                    parts = line.split('content="')
+                    if len(parts) > 1:
+                        image_url = parts[1].split('"')[0]
+                        break
+            
+            if image_url:
+                logger.info(f"Kép URL megtalálva a meta tag-ben: {image_url}")
+                img_response = requests.get(image_url, headers=headers, timeout=30)
+                if img_response.status_code == 200:
+                    img = Image.open(BytesIO(img_response.content))
+                    return img
+            
+            logger.error("Nem található megfelelő kép a weboldalon")
+            return None
+        
+        logger.error(f"Nem sikerült letölteni a weboldalt: HTTP {response.status_code}")
+        return None
+    
     except Exception as e:
-        logger.error(f"Hiba a weboldal képernyőképének készítésekor: {str(e)}")
+        logger.error(f"Hiba a kép letöltésekor: {e}")
         return None
 
 def update_display():
+    """Az e-paper kijelző frissítése a legújabb képpel."""
+    global epd
+    
     try:
-        # Inicializáljuk a kijelzőt
-        logger.info("E-paper kijelző inicializálása...")
+        # Kijelző inicializálása
+        logger.info("Kijelző inicializálása...")
         epd = epd4in01f.EPD()
         epd.init()
         
-        # Weboldal képének készítése
-        image = capture_webpage_to_image()
+        # Kép letöltése a weboldalról
+        img = fetch_image()
+        if img is None:
+            logger.error("Nem sikerült letölteni a képet")
+            return
         
-        if image is None:
-            # Ha nem sikerült képernyőképet készíteni, próbáljuk meg letölteni a weboldalt
-            try:
-                logger.info("Alternatív tartalom letöltése...")
-                response = requests.get("https://naptarak.com/e-paper.html")
-                with open('/tmp/temp_page.html', 'wb') as f:
-                    f.write(response.content)
-                
-                # Ha a weboldal képet ad vissza, azt használjuk
-                if 'image' in response.headers.get('Content-Type', ''):
-                    with open('/tmp/image.png', 'wb') as f:
-                        f.write(response.content)
-                    image = Image.open('/tmp/image.png')
-                else:
-                    # Ha minden más módszer sikertelen, hibaüzenetet jelenítünk meg
-                    image = Image.new('RGB', (640, 400), (255, 255, 255))
-                    
-            except Exception as e:
-                logger.error(f"Hiba a weboldal letöltésekor: {str(e)}")
-                image = Image.new('RGB', (640, 400), (255, 255, 255))
-                
-        # Kijelző méreteihez igazítás ha szükséges
-        if image.size != (epd.width, epd.height):
-            image = image.resize((epd.width, epd.height))
+        # Kép mód és átméretezés kezelése ha szükséges
+        if img.mode != 'RGB':
+            img = img.convert('RGB')
         
-        # Frissítjük a kijelzőt
+        # Kép átméretezése, ha szükséges
+        display_width = 640  # Waveshare 4.01" HAT szélesség
+        display_height = 400  # Waveshare 4.01" HAT magasság
+        
+        if img.size != (display_width, display_height):
+            logger.info(f"Kép átméretezése {img.size}-ről {(display_width, display_height)}-re")
+            img = img.resize((display_width, display_height))
+        
+        # Kép megjelenítése
         logger.info("Kijelző frissítése...")
-        epd.display(epd.getbuffer(image))
-        logger.info("Kijelző frissítve!")
+        epd.display(epd.getbuffer(img))
         
-        # Alvó módba helyezzük a kijelzőt az energiatakarékosság érdekében
+        # Kijelző alvó módba helyezése az energiatakarékosság érdekében
         epd.sleep()
-            
+        
+        logger.info("Kijelző sikeresen frissítve")
+    
     except Exception as e:
-        logger.error(f"Hiba a kijelző frissítése közben: {str(e)}")
+        logger.error(f"Hiba a kijelző frissítésekor: {e}")
+        # Próbáljuk meg alvó módba tenni a kijelzőt, még ha hiba történt is
+        try:
+            if epd is not None:
+                epd.sleep()
+        except:
+            pass
 
 def main():
-    logger.info("E-paper kijelző alkalmazás elindult")
+    """Fő függvény a kijelző periodikus frissítéséhez."""
+    # Jelkezelő regisztrálása
+    signal.signal(signal.SIGINT, signal_handler)
+    signal.signal(signal.SIGTERM, signal_handler)
     
-    # Végtelen ciklusban frissítjük a kijelzőt
+    logger.info("E-paper kijelző szolgáltatás indítása")
+    
     while True:
-        update_display()
-        # 5 percet várunk a következő frissítésig (300 másodperc)
-        logger.info("Várakozás 5 percet a következő frissítésig...")
-        time.sleep(300)
+        try:
+            update_display()
+        except Exception as e:
+            logger.error(f"Váratlan hiba a fő ciklusban: {e}")
+        
+        logger.info("Várakozás 5 percig...")
+        # Alvás kisebb részletekben, hogy reagálhasson a jelekre
+        for _ in range(30):  # 30 * 10 másodperc = 5 perc
+            time.sleep(10)
 
 if __name__ == "__main__":
-    try:
-        main()
-    except KeyboardInterrupt:
-        logger.info("A program megszakítva a felhasználó által")
-        sys.exit(0)
-EOL
+    main()
+EOF
 
-# Script futtathatóvá tétele
-chmod +x "$INSTALL_DIR/e_paper_display.py"
-
-# Systemd service létrehozása az automatikus indításhoz
-echo "Systemd service létrehozása..."
-cat > /etc/systemd/system/e-paper-display.service << EOL
+# Systemd szolgáltatás fájl létrehozása
+echo "Systemd szolgáltatás létrehozása..."
+cat > /etc/systemd/system/e-paper-display.service << EOF
 [Unit]
 Description=E-Paper Display Service
 After=network.target
 
 [Service]
-ExecStart=/usr/bin/python3 $INSTALL_DIR/e_paper_display.py
-WorkingDirectory=$INSTALL_DIR
-StandardOutput=inherit
-StandardError=inherit
+ExecStart=/usr/bin/python3 $APP_DIR/display.py
+WorkingDirectory=$APP_DIR
 Restart=always
 User=root
 
 [Install]
 WantedBy=multi-user.target
-EOL
+EOF
 
-# Service engedélyezése és indítása
-echo "Systemd service engedélyezése és indítása..."
+# SPI interfész engedélyezése
+echo "SPI interfész engedélyezése..."
+if ! grep -q "dtparam=spi=on" /boot/config.txt; then
+  echo "dtparam=spi=on" >> /boot/config.txt
+fi
+
+# Jogosultságok beállítása
+echo "Jogosultságok beállítása..."
+chmod +x "$APP_DIR/display.py"
+
+# Szolgáltatás engedélyezése és indítása
+echo "Szolgáltatás engedélyezése és indítása..."
 systemctl daemon-reload
 systemctl enable e-paper-display.service
 systemctl start e-paper-display.service
 
-echo ""
-echo "Telepítés befejezve!"
-echo "Az e-paper kijelző alkalmazás telepítve lett és automatikusan elindul a rendszer indításakor."
-echo "A kijelző 5 percenként frissül a https://naptarak.com/e-paper.html oldal tartalmával."
-echo ""
-echo "A naplófájlok itt találhatók: /var/log/e-paper-display.log"
-echo ""
-echo "A telepítő után újraindítás ajánlott:"
-echo "sudo reboot"
-echo ""
+echo "===================================================="
+echo "Telepítés kész!"
+echo "Az e-paper kijelző most a https://naptarak.com/e-paper.html tartalmat mutatja"
+echo "és 5 percenként frissül."
+echo "Az állapot ellenőrzéséhez: sudo systemctl status e-paper-display.service"
+echo "Naplók megtekintéséhez: cat $APP_DIR/display.log"
+echo "===================================================="
