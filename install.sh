@@ -39,22 +39,19 @@ if ! apt-cache show libtiff5 &>/dev/null; then
   fi
 fi
 
-# Szükséges csomagok telepítése
-echo "Szükséges csomagok telepítése..."
+# Szükséges rendszer csomagok telepítése
+echo "Szükséges rendszer csomagok telepítése..."
 PACKAGES="python3-pip python3-pil python3-numpy libopenjp2-7 libatlas-base-dev git wget imagemagick"
+
 if [ -n "$TIFF_PACKAGE" ]; then
   PACKAGES="$PACKAGES $TIFF_PACKAGE"
 fi
 
 apt-get install -y $PACKAGES
 
-# Python könyvtárak telepítése
-echo "Python könyvtárak telepítése..."
-pip3 install \
-  RPi.GPIO \
-  spidev \
-  requests \
-  pillow
+# Python csomagok telepítése apt-get használatával pip helyett
+echo "Python csomagok telepítése apt segítségével..."
+apt-get install -y python3-rpi.gpio python3-spidev python3-requests python3-pil python3-venv
 
 # Alkalmazás könyvtár létrehozása
 echo "Alkalmazás könyvtár létrehozása..."
