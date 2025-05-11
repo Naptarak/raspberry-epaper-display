@@ -1,12 +1,10 @@
 #!/bin/bash
 
-# E-Paper időjárás kijelző telepítő Raspberry Pi Zero 2W-hez
-# Waveshare 4.01 HAT (F) e-paper kijelzőhöz
-# API-alapú időjárás megjelenítés, 5 perces frissítéssel
+# E-Paper időjárás kijelző telepítő Debian 12 rendszerhez
+# Frissítési gyakoriság: 5 perc
 
 echo "===================================================="
-echo "E-Paper időjárás kijelző telepítése Raspberry Pi Zero 2W-re"
-echo "Kijelző: Waveshare 4.01 inch HAT (F) e-paper"
+echo "E-Paper időjárás kijelző telepítése Debian 12 rendszerre"
 echo "Időjárás forrás: OpenWeatherMap API"
 echo "Frissítési gyakoriság: 5 perc"
 echo "===================================================="
@@ -36,19 +34,9 @@ mkdir -p "$APP_DIR"
 mkdir -p "$APP_DIR/fonts"
 mkdir -p "$APP_DIR/icons"
 
-# Minimális csomagok telepítése (rendszerfrissítés nélkül)
-echo "Szükséges csomagok telepítése (frissítés nélkül)..."
-apt-get install -y --no-install-recommends python3-pip python3-pil python3-numpy \
-  python3-rpi.gpio python3-spidev python3-requests \
-  libopenjp2-7 git wget unzip curl
-
-# Waveshare e-Paper könyvtár letöltése
-echo "Waveshare e-Paper könyvtár letöltése ZIP-ként..."
-wget -q -O /tmp/waveshare.zip https://github.com/waveshare/e-Paper/archive/master.zip
-mkdir -p /tmp/waveshare
-unzip -q /tmp/waveshare.zip -d /tmp/waveshare
-cp -r /tmp/waveshare/e-Paper-master/RaspberryPi_JetsonNano/python/lib/waveshare_epd "$APP_DIR/"
-rm -rf /tmp/waveshare /tmp/waveshare.zip
+# Minimális csomagok telepítése
+echo "Szükséges csomagok telepítése..."
+apt-get install -y --no-install-recommends python3-pip python3-pil libopenjp2-7 python3-requests curl wget unzip
 
 # Időjárás ikonok letöltése
 echo "Időjárás ikonok letöltése..."
@@ -69,68 +57,7 @@ echo "Betűtípusok letöltése..."
 wget -q "https://github.com/google/fonts/raw/main/ofl/roboto/Roboto-Regular.ttf" -O "$APP_DIR/fonts/Roboto-Regular.ttf"
 wget -q "https://github.com/google/fonts/raw/main/ofl/roboto/Roboto-Bold.ttf" -O "$APP_DIR/fonts/Roboto-Bold.ttf"
 
-# Fallback HTML-PNG konvertáló script (ha nincs internet)
-echo "Fallback képgeneráló script létrehozása..."
-cat > "$APP_DIR/generate_fallback.py" << 'EOF'
-#!/usr/bin/env python3
-# -*- coding:utf-8 -*-
-
-import os
-import sys
-from datetime import datetime
-from PIL import Image, ImageDraw, ImageFont
-
-# Paraméterek
-OUTPUT_PATH = os.path.join(os.path.dirname(os.path.realpath(__file__)), "fallback.png")
-DISPLAY_WIDTH = 640
-DISPLAY_HEIGHT = 400
-FONT_REGULAR = os.path.join(os.path.dirname(os.path.realpath(__file__)), "fonts", "Roboto-Regular.ttf")
-FONT_BOLD = os.path.join(os.path.dirname(os.path.realpath(__file__)), "fonts", "Roboto-Bold.ttf")
-
-def create_fallback_image():
-    """Hibaüzenet kép készítése"""
-    try:
-        image = Image.new('RGB', (DISPLAY_WIDTH, DISPLAY_HEIGHT), color='white')
-        draw = ImageDraw.Draw(image)
-        
-        # Betűtípusok
-        font_title = ImageFont.truetype(FONT_BOLD, 36)
-        font_text = ImageFont.truetype(FONT_REGULAR, 24)
-        
-        # Cím
-        draw.text((DISPLAY_WIDTH//2, 100), "Pécs Időjárás", font=font_title, fill='black', anchor='mt')
-        
-        # Hibaüzenet
-        error_messages = [
-            "Időjárási adatok betöltése nem sikerült.",
-            "Kérlek ellenőrizd a hálózati kapcsolatot",
-            "és az API beállításokat.",
-            "",
-            "Újrapróbálkozás 5 perc múlva."
-        ]
-        
-        for i, message in enumerate(error_messages):
-            draw.text((DISPLAY_WIDTH//2, 180 + i*40), message, font=font_text, fill='black', anchor='mt')
-        
-        # Aktuális idő
-        current_time = datetime.now().strftime('%Y-%m-%d %H:%M')
-        draw.text((DISPLAY_WIDTH//2, 350), current_time, font=font_text, fill='black', anchor='mt')
-        
-        # Kép mentése
-        image.save(OUTPUT_PATH)
-        print(f"Fallback kép sikeresen létrehozva: {OUTPUT_PATH}")
-        return True
-    except Exception as e:
-        print(f"Hiba a fallback kép készítésekor: {e}")
-        return False
-
-if __name__ == "__main__":
-    create_fallback_image()
-EOF
-
-chmod +x "$APP_DIR/generate_fallback.py"
-
-# Időjárási adatokat megjelenítő Python script
+# Időjárási adatokat megjelenítő Python script - DEBIAN KOMPATIBILIS VERZIÓ
 echo "Időjárás megjelenítő script létrehozása..."
 cat > "$APP_DIR/weather_display.py" << 'EOF'
 #!/usr/bin/env python3
@@ -145,20 +72,6 @@ import requests
 from datetime import datetime, timedelta
 from PIL import Image, ImageDraw, ImageFont
 import signal
-import subprocess
-
-# Waveshare e-paper kijelző könyvtár importálása
-lib_dir = os.path.join(os.path.dirname(os.path.realpath(__file__)), 'waveshare_epd')
-if os.path.exists(lib_dir):
-    sys.path.append(lib_dir)
-    try:
-        from waveshare_epd import epd4in01f
-    except ImportError as e:
-        print(f"Hiba a Waveshare könyvtár importálásakor: {e}")
-        sys.exit(1)
-else:
-    print(f"A 'waveshare_epd' könyvtár nem található: {lib_dir}")
-    sys.exit(1)
 
 # Globális beállítások - ezek a beállítások megfelelnek Pécsnek
 CITY = "Pécs"
@@ -172,10 +85,10 @@ DISPLAY_WIDTH = 640
 DISPLAY_HEIGHT = 400
 APP_DIR = os.path.dirname(os.path.realpath(__file__))
 LOG_FILE = os.path.join(APP_DIR, "weather.log")
+OUTPUT_IMAGE = os.path.join(APP_DIR, "weather.png")
 FONT_REGULAR = os.path.join(APP_DIR, "fonts", "Roboto-Regular.ttf")
 FONT_BOLD = os.path.join(APP_DIR, "fonts", "Roboto-Bold.ttf")
 ICON_DIR = os.path.join(APP_DIR, "icons")
-FALLBACK_IMAGE = os.path.join(APP_DIR, "fallback.png")
 
 # Magyar nap nevek a heti előrejelzéshez
 DAY_NAMES_HU = {
@@ -213,18 +126,9 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
-# Globális változók
-epd = None
-
 def signal_handler(sig, frame):
     """Kezelő a tiszta kilépéshez"""
     logger.info("Kilépés...")
-    global epd
-    if epd is not None:
-        try:
-            epd.sleep()
-        except:
-            pass
     sys.exit(0)
 
 def internet_connected():
@@ -238,17 +142,39 @@ def internet_connected():
 def create_fallback_image():
     """Hibaüzenet kép készítése ha nincs internet"""
     try:
-        fallback_script = os.path.join(APP_DIR, "generate_fallback.py")
-        subprocess.run([sys.executable, fallback_script], check=True)
+        image = Image.new('RGB', (DISPLAY_WIDTH, DISPLAY_HEIGHT), color='white')
+        draw = ImageDraw.Draw(image)
         
-        if os.path.exists(FALLBACK_IMAGE):
-            return FALLBACK_IMAGE
-        else:
-            logger.error("Nem sikerült a fallback képet létrehozni")
-            return None
+        # Betűtípusok
+        font_title = ImageFont.truetype(FONT_BOLD, 36)
+        font_text = ImageFont.truetype(FONT_REGULAR, 24)
+        
+        # Cím
+        draw.text((DISPLAY_WIDTH//2, 100), "Pécs Időjárás", font=font_title, fill='black', anchor='mt')
+        
+        # Hibaüzenet
+        error_messages = [
+            "Időjárási adatok betöltése nem sikerült.",
+            "Kérlek ellenőrizd a hálózati kapcsolatot",
+            "és az API beállításokat.",
+            "",
+            "Újrapróbálkozás 5 perc múlva."
+        ]
+        
+        for i, message in enumerate(error_messages):
+            draw.text((DISPLAY_WIDTH//2, 180 + i*40), message, font=font_text, fill='black', anchor='mt')
+        
+        # Aktuális idő
+        current_time = datetime.now().strftime('%Y-%m-%d %H:%M')
+        draw.text((DISPLAY_WIDTH//2, 350), current_time, font=font_text, fill='black', anchor='mt')
+        
+        # Kép mentése
+        image.save(OUTPUT_IMAGE)
+        logger.info(f"Fallback kép sikeresen létrehozva: {OUTPUT_IMAGE}")
+        return True
     except Exception as e:
         logger.error(f"Hiba a fallback kép készítésekor: {e}")
-        return None
+        return False
 
 def get_weather_data():
     """Időjárási adatok lekérése az OpenWeatherMap API-tól"""
@@ -429,70 +355,34 @@ def draw_weather_image(weather_data):
         draw.text((DISPLAY_WIDTH-40, DISPLAY_HEIGHT-20), f"Frissítve: {current_time}", font=font_tiny, fill='black', anchor='rb')
         
         # Kép mentése
-        image_path = os.path.join(APP_DIR, "latest_weather.png")
-        image.save(image_path)
+        image.save(OUTPUT_IMAGE)
+        logger.info(f"Időjárás kép sikeresen létrehozva: {OUTPUT_IMAGE}")
         
-        return image
+        return True
     except Exception as e:
         logger.error(f"Hiba a kép rajzolásakor: {e}")
-        return None
+        return False
 
 def update_display():
-    """Az e-paper kijelző frissítése"""
-    global epd
-    
+    """Időjárási adatok frissítése és kép generálása"""
     try:
-        # Kijelző inicializálása
-        logger.info("Kijelző inicializálása...")
-        epd = epd4in01f.EPD()
-        epd.init()
-        
         # Időjárási adatok lekérése
         weather_data = get_weather_data()
         
         if weather_data:
             # Időjárási adatok képének elkészítése
             logger.info("Időjárási adatok képének elkészítése...")
-            image = draw_weather_image(weather_data)
+            draw_weather_image(weather_data)
         else:
             # Hibaüzenet képének elkészítése
             logger.info("Hibaüzenet képének elkészítése...")
-            fallback_image_path = create_fallback_image()
-            if fallback_image_path and os.path.exists(fallback_image_path):
-                image = Image.open(fallback_image_path)
-            else:
-                # Egyszerű hibaüzenet, ha még a fallback is hibás
-                image = Image.new('RGB', (DISPLAY_WIDTH, DISPLAY_HEIGHT), color='white')
-                draw = ImageDraw.Draw(image)
-                try:
-                    font = ImageFont.truetype(FONT_BOLD, 24)
-                    draw.text((DISPLAY_WIDTH//2, DISPLAY_HEIGHT//2), "Hiba - Újrapróbálkozás 5 perc múlva", 
-                              font=font, fill='black', anchor='mm')
-                except:
-                    draw.text((100, 200), "Hiba - Újrapróbálkozás 5 perc múlva", fill='black')
+            create_fallback_image()
         
-        if image:
-            # Kép megjelenítése a kijelzőn
-            logger.info("Kép megjelenítése a kijelzőn...")
-            epd.display(epd.getbuffer(image))
-            
-            # Kijelző alvó módba helyezése
-            time.sleep(2)  # Várunk kicsit, mielőtt alvó módba helyezzük
-            epd.sleep()
-            
-            logger.info("Kijelző frissítve")
-            return True
-        else:
-            logger.error("Nem sikerült képet létrehozni")
-            return False
+        logger.info("Megjelenítés frissítve")
+        return True
     
     except Exception as e:
-        logger.error(f"Hiba a kijelző frissítésekor: {e}")
-        try:
-            if epd is not None:
-                epd.sleep()
-        except:
-            pass
+        logger.error(f"Hiba a megjelenítés frissítésekor: {e}")
         return False
 
 def main():
@@ -501,11 +391,7 @@ def main():
     signal.signal(signal.SIGINT, signal_handler)
     signal.signal(signal.SIGTERM, signal_handler)
     
-    logger.info("E-paper időjárás kijelző szolgáltatás indítása")
-    
-    # Ha nincs fallback kép, hozzunk létre egyet
-    if not os.path.exists(FALLBACK_IMAGE):
-        create_fallback_image()
+    logger.info("Időjárás megjelenítő szolgáltatás indítása")
     
     # Első frissítés - akár nincs internet, akár van, valamit meg kell jeleníteni
     update_display()
@@ -526,13 +412,12 @@ EOF
 
 chmod +x "$APP_DIR/weather_display.py"
 
-# Systemd szolgáltatás fájl létrehozása - MÓDOSÍTVA A KÖNNYEBB BOOTOLÁSHOZ
+# Systemd szolgáltatás fájl létrehozása
 echo "Systemd szolgáltatás létrehozása..."
 cat > /etc/systemd/system/e-paper-display.service << EOF
 [Unit]
-Description=E-Paper Weather Display Service
+Description=Weather Display Service
 After=network.target
-# NE használj network-online.target-et, mert az késleltetheti a bootolást!
 
 [Service]
 ExecStart=/usr/bin/python3 $APP_DIR/weather_display.py
@@ -545,12 +430,6 @@ User=root
 WantedBy=multi-user.target
 EOF
 
-# SPI interfész engedélyezése
-echo "SPI interfész engedélyezése..."
-if ! grep -q "dtparam=spi=on" /boot/config.txt; then
-  echo "dtparam=spi=on" >> /boot/config.txt
-fi
-
 # Szolgáltatás engedélyezése és indítása
 echo "Szolgáltatás engedélyezése és indítása..."
 systemctl daemon-reload
@@ -558,14 +437,11 @@ systemctl enable e-paper-display.service
 systemctl start e-paper-display.service
 
 echo "===================================================="
-echo "Telepítés kész! Fő változtatások:"
-echo "1. Egyszerűbb indítás a bootoláskor (network.target)"
-echo "2. Automatikus fallback kép, ha nincs internet"
-echo "3. A régi és új program ütközésének elkerülése"
+echo "Telepítés kész!"
 echo ""
-echo "Az e-paper kijelző most közvetlenül a OpenWeatherMap API-ból kéri le az adatokat,"
-echo "és 5 percenként frissül."
+echo "Ez a program létrehozza az időjárás képet: $APP_DIR/weather.png"
+echo "5 percenként frissül. Nem próbálja közvetlenül megjeleníteni e-paper kijelzőn."
+echo ""
 echo "Az állapot ellenőrzéséhez: sudo systemctl status e-paper-display.service"
 echo "Naplók megtekintéséhez: cat $APP_DIR/weather.log"
-echo "Reboot javasolt a tiszta indításhoz: sudo reboot"
 echo "===================================================="
